@@ -17,7 +17,7 @@ import {
   Phone, Lock, ChevronDown, Loader2, Search,
   Pencil, Trash2, KeyRound, ShieldCheck, SlidersHorizontal, History,
   Palette, Upload, Check, Building2, Building, RotateCcw, AlertTriangle, Eye, EyeOff,
-  GripVertical, Archive, Kanban, ChevronUp, GripHorizontal,
+  GripVertical, Archive, Kanban, ChevronUp, GripHorizontal, MessageSquare,
 } from 'lucide-react';
 import { addFunnel, updateFunnel as updateFunnelStore, removeFunnel, fetchFunnels } from '../store/funnelSlice';
 import DateTimePicker from '../components/DateTimePicker';
@@ -26,13 +26,14 @@ import { mediaUrl } from '../utils/media';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5002/api';
 
 const TABS = [
-  { key: 'branding',    icon: Palette,     label: 'Brending'         },
-  { key: 'funnels',     icon: Kanban,      label: 'Varonkalar'       },
-  { key: 'tasks',       icon: SlidersHorizontal, label: 'Vazifalar'  },
-  { key: 'integrations',icon: Archive,     label: 'Integratsiyalar'  },
-  { key: 'users',       icon: Users,       label: 'Foydalanuvchilar' },
-  { key: 'roles',       icon: ShieldCheck, label: 'Rollar'           },
-  { key: 'audit',       icon: History,     label: 'Audit jurnali'    },
+  { key: 'branding',    icon: Palette,          label: 'Brending'         },
+  { key: 'funnels',     icon: Kanban,           label: 'Varonkalar'       },
+  { key: 'tasks',       icon: SlidersHorizontal,label: 'Vazifalar'        },
+  { key: 'integrations',icon: Archive,          label: 'Integratsiyalar'  },
+  { key: 'inbox',       icon: MessageSquare,    label: 'Inbox'            },
+  { key: 'users',       icon: Users,            label: 'Foydalanuvchilar' },
+  { key: 'roles',       icon: ShieldCheck,      label: 'Rollar'           },
+  { key: 'audit',       icon: History,          label: 'Audit jurnali'    },
 ];
 
 // Biznes egasiga ko'rinmasin — faqat URL orqali (?tab=general / ?tab=branding) ochiladi.
@@ -631,6 +632,9 @@ function TasksTab() {
 
 /* ─── IntegrationsTab ─────────────────────────────────────── */
 function IntegrationsTab() {
+  const location = useLocation();
+  const navigate = useNavigate();
+
   const [token,        setToken]        = useState('');
   const [botInfo,      setBotInfo]      = useState(null);
   const [loading,      setLoading]      = useState(true);
@@ -639,17 +643,63 @@ function IntegrationsTab() {
   const [packInput,    setPackInput]    = useState('');
   const [packs,        setPacks]        = useState([]);
   const [savingPacks,  setSavingPacks]  = useState(false);
+  const [igInfo,       setIgInfo]       = useState(null);
+  const [igConnecting, setIgConnecting] = useState(false);
+  const [igDisconnecting, setIgDisconnecting] = useState(false);
 
   useEffect(() => {
     Promise.all([
       axios.get(`${API_URL}/organization/telegram-bot`),
       axios.get(`${API_URL}/organization/sticker-packs`),
-    ]).then(([tgRes, spRes]) => {
+      axios.get(`${API_URL}/instagram/status`),
+    ]).then(([tgRes, spRes, igRes]) => {
       setBotInfo(tgRes.data);
       setPacks(spRes.data.stickerPacks || []);
+      setIgInfo(igRes.data);
     }).catch(() => toast.error('Yuklanishda xato'))
       .finally(() => setLoading(false));
   }, []);
+
+  // Handle OAuth callback redirect
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const ig = params.get('ig');
+    if (!ig) return;
+    if (ig === 'success') {
+      toast.success('Instagram muvaffaqiyatli ulandi!');
+      axios.get(`${API_URL}/instagram/status`).then(r => setIgInfo(r.data)).catch(() => {});
+    } else if (ig === 'error') {
+      const msg = params.get('msg') || 'Ulanishda xato yuz berdi';
+      toast.error(msg);
+    }
+    // Clean up URL params
+    navigate('/settings?tab=integrations', { replace: true });
+  }, [location.search, navigate]);
+
+  const igConnect = async () => {
+    setIgConnecting(true);
+    try {
+      const res = await axios.get(`${API_URL}/instagram/auth`);
+      window.location.href = res.data.url;
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'OAuth boshlanishda xato');
+      setIgConnecting(false);
+    }
+  };
+
+  const igDisconnect = async () => {
+    if (!window.confirm("Instagram'ni uzib qo'yishni tasdiqlaysizmi?")) return;
+    setIgDisconnecting(true);
+    try {
+      await axios.delete(`${API_URL}/instagram/disconnect`);
+      setIgInfo({ connected: false, username: '', igUserId: '', pageId: '' });
+      toast.success("Instagram uzildi");
+    } catch {
+      toast.error('Xato');
+    } finally {
+      setIgDisconnecting(false);
+    }
+  };
 
   const addPack = () => {
     const raw = packInput.trim();
@@ -825,11 +875,76 @@ function IntegrationsTab() {
         </div>
       </div>
 
+      {/* Instagram DM */}
+      <div className="bg-white border border-surface-200 rounded-2xl overflow-hidden">
+        <div className="flex items-center gap-3 px-5 py-4 border-b border-surface-100">
+          <div className="w-9 h-9 rounded-xl bg-[#fce8ef] flex items-center justify-center shrink-0">
+            <svg viewBox="0 0 24 24" className="w-5 h-5" fill="none">
+              <defs>
+                <linearGradient id="ig-grad" x1="0%" y1="100%" x2="100%" y2="0%">
+                  <stop offset="0%" stopColor="#f09433"/>
+                  <stop offset="25%" stopColor="#e6683c"/>
+                  <stop offset="50%" stopColor="#dc2743"/>
+                  <stop offset="75%" stopColor="#cc2366"/>
+                  <stop offset="100%" stopColor="#bc1888"/>
+                </linearGradient>
+              </defs>
+              <rect x="2" y="2" width="20" height="20" rx="6" fill="url(#ig-grad)"/>
+              <circle cx="12" cy="12" r="4.5" stroke="white" strokeWidth="1.8" fill="none"/>
+              <circle cx="17.5" cy="6.5" r="1.2" fill="white"/>
+            </svg>
+          </div>
+          <div className="flex-1">
+            <p className="font-semibold text-ink text-sm">Instagram DM</p>
+            <p className="text-xs text-ink-tertiary">Direct xabarlarni Inbox'ga ulang</p>
+          </div>
+          {igInfo?.connected && (
+            <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">Ulangan</span>
+          )}
+        </div>
+
+        <div className="px-5 py-4 space-y-4">
+          {igInfo?.connected ? (
+            <>
+              <div className="flex items-center gap-3 p-3 bg-emerald-50 rounded-xl">
+                <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-ink">@{igInfo.username || igInfo.igUserId}</p>
+                  <p className="text-xs text-ink-tertiary mt-0.5">Instagram Business akkaunt ulangan</p>
+                </div>
+              </div>
+              <p className="text-xs text-ink-tertiary leading-relaxed">
+                Instagram DM xabarlari avtomatik ravishda Inbox sahifasiga kelib tushadi.
+              </p>
+              <button onClick={igDisconnect} disabled={igDisconnecting}
+                className="w-full py-2 rounded-lg border border-red-200 text-red-600 text-sm font-medium hover:bg-red-50 transition-colors flex items-center justify-center gap-2">
+                {igDisconnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : <X className="w-4 h-4" />}
+                Uzib qo'yish
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-ink-tertiary leading-relaxed">
+                Instagram Business yoki Creator akkauntingizni ulang. Facebook sahifangiz orqali OAuth orqali avtorizatsiya qilinadi.
+              </p>
+              <button onClick={igConnect} disabled={igConnecting}
+                className="w-full py-2.5 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-2 transition-opacity hover:opacity-90"
+                style={{ background: 'linear-gradient(135deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%)' }}>
+                {igConnecting ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Facebook orqali ulash
+              </button>
+              <p className="text-xs text-ink-disabled text-center">
+                Meta Developer App ID va Secret .env da sozlangan bo'lishi kerak
+              </p>
+            </>
+          )}
+        </div>
+      </div>
+
       {/* Coming soon channels */}
       {[
-        { name: 'WhatsApp Business', color: '#25D366', bg: '#e8faf0' },
-        { name: 'Instagram DM',      color: '#E1306C', bg: '#fce8ef' },
-        { name: 'Facebook Messenger',color: '#1877F2', bg: '#e7f0fd' },
+        { name: 'WhatsApp Business',  color: '#25D366', bg: '#e8faf0' },
+        { name: 'Facebook Messenger', color: '#1877F2', bg: '#e7f0fd' },
       ].map(ch => (
         <div key={ch.name} className="bg-white border border-surface-200 rounded-2xl px-5 py-4 flex items-center gap-3 opacity-50">
           <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: ch.bg }}>
@@ -4467,6 +4582,144 @@ function RolesTab() {
   );
 }
 
+/* ─── Inbox / Quick Replies tab ──────────────────────────── */
+function QuickReplyTab() {
+  const [replies, setReplies] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm]       = useState({ title: '', text: '', shortcut: '' });
+  const [editId, setEditId]   = useState(null);
+  const [saving, setSaving]   = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try { const r = await axios.get(`${API_URL}/inbox/quick-replies`); setReplies(r.data.replies || []); }
+    catch { toast.error('Yuklanmadi'); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const resetForm = () => { setForm({ title: '', text: '', shortcut: '' }); setEditId(null); };
+
+  const handleSave = async () => {
+    if (!form.title.trim() || !form.text.trim()) { toast.error('Sarlavha va matn kiritilishi shart'); return; }
+    setSaving(true);
+    try {
+      if (editId) {
+        const r = await axios.put(`${API_URL}/inbox/quick-replies/${editId}`, form);
+        setReplies(prev => prev.map(x => x._id === editId ? r.data.reply : x));
+        toast.success('Yangilandi');
+      } else {
+        const r = await axios.post(`${API_URL}/inbox/quick-replies`, form);
+        setReplies(prev => [...prev, r.data.reply]);
+        toast.success("Qo'shildi");
+      }
+      resetForm();
+    } catch (e) { toast.error(e.response?.data?.message || 'Xato'); }
+    finally { setSaving(false); }
+  };
+
+  const startEdit = (r) => { setEditId(r._id); setForm({ title: r.title, text: r.text, shortcut: r.shortcut || '' }); };
+
+  const handleDelete = async (id) => {
+    if (!window.confirm("O'chirishni tasdiqlaysizmi?")) return;
+    try { await axios.delete(`${API_URL}/inbox/quick-replies/${id}`); setReplies(prev => prev.filter(x => x._id !== id)); toast.success("O'chirildi"); }
+    catch { toast.error('Xato'); }
+  };
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <div>
+        <h2 className="text-base font-bold text-ink">Tezkor javoblar (Quick Replies)</h2>
+        <p className="text-sm text-ink-tertiary mt-0.5">Chat yozganda <code className="bg-surface-100 px-1 rounded text-xs">/</code> bosib tezkor javoblarni tanlang</p>
+      </div>
+
+      {/* Form */}
+      <div className="bg-white border border-surface-200 rounded-2xl p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-ink">{editId ? 'Tahrirlash' : "Yangi qo'shish"}</h3>
+        <div className="flex gap-3">
+          <div className="flex-1">
+            <label className="text-xs text-ink-tertiary mb-1 block">Sarlavha *</label>
+            <input
+              className="w-full border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-300"
+              placeholder="masalan: salom"
+              value={form.title}
+              onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+            />
+          </div>
+          <div className="w-28">
+            <label className="text-xs text-ink-tertiary mb-1 block">Shortcut</label>
+            <input
+              className="w-full border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-300"
+              placeholder="sl"
+              value={form.shortcut}
+              onChange={e => setForm(f => ({ ...f, shortcut: e.target.value }))}
+            />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-ink-tertiary mb-1 block">Matn *</label>
+          <textarea
+            rows={3}
+            className="w-full border border-surface-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-300 resize-none"
+            placeholder="Javob matni..."
+            value={form.text}
+            onChange={e => setForm(f => ({ ...f, text: e.target.value }))}
+          />
+        </div>
+        <div className="flex gap-2 justify-end">
+          {editId && (
+            <button onClick={resetForm} className="px-4 py-2 text-sm rounded-xl bg-surface-100 text-ink-secondary hover:bg-surface-200 transition-colors">
+              Bekor qilish
+            </button>
+          )}
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 text-sm rounded-xl bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-40 transition-colors"
+          >
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+            {editId ? 'Saqlash' : "Qo'shish"}
+          </button>
+        </div>
+      </div>
+
+      {/* List */}
+      {loading ? (
+        <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-primary-400" /></div>
+      ) : replies.length === 0 ? (
+        <div className="text-center py-10 text-ink-tertiary">
+          <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-30" />
+          <p className="text-sm">Tezkor javob yo'q</p>
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {replies.map(r => (
+            <div key={r._id} className="bg-white border border-surface-200 rounded-2xl px-4 py-3 flex items-start gap-3">
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 mb-0.5">
+                  <span className="text-sm font-semibold text-primary-600">/{r.title}</span>
+                  {r.shortcut && (
+                    <span className="text-[10px] font-mono bg-surface-100 text-ink-tertiary px-1.5 py-0.5 rounded">!{r.shortcut}</span>
+                  )}
+                </div>
+                <p className="text-xs text-ink-tertiary line-clamp-2">{r.text}</p>
+              </div>
+              <div className="flex items-center gap-1 shrink-0">
+                <button onClick={() => startEdit(r)} className="w-7 h-7 rounded-lg hover:bg-surface-100 flex items-center justify-center text-ink-disabled hover:text-ink transition-colors">
+                  <Pencil className="w-3.5 h-3.5" />
+                </button>
+                <button onClick={() => handleDelete(r._id)} className="w-7 h-7 rounded-lg hover:bg-red-50 flex items-center justify-center text-ink-disabled hover:text-red-600 transition-colors">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Main ───────────────────────────────────────────────── */
 export default function SettingsPage() {
   const t = useT();
@@ -4533,6 +4786,7 @@ export default function SettingsPage() {
         {tab === 'funnels'    && <FunnelsTab />}
         {tab === 'tasks'         && <TasksTab />}
         {tab === 'integrations'  && <IntegrationsTab />}
+        {tab === 'inbox'         && <QuickReplyTab />}
         {tab === 'users'         && <UsersTab currentUser={user} />}
         {tab === 'roles'      && <RolesTab />}
         {tab === 'currencies' && <CurrenciesTab />}

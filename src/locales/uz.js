@@ -998,6 +998,7 @@ export default {
       funnels: "Varonkalar",
       tasks: "Vazifalar",
       integrations: "Integratsiyalar",
+      inbox: "Inbox",
       audit: "Audit jurnali",
     },
     branding: {

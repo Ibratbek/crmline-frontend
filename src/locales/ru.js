@@ -931,6 +931,8 @@ export default {
       trash: "Корзина",
       funnels: "Воронки",
       tasks: "Задачи",
+      integrations: "Интеграции",
+      inbox: "Inbox",
       audit: "Журнал аудита",
     },
     branding: {

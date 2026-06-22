@@ -987,6 +987,8 @@ export default {
       trash: "Trash",
       funnels: "Funnels",
       tasks: "Tasks",
+      integrations: "Integrations",
+      inbox: "Inbox",
       audit: "Audit log",
     },
     branding: {

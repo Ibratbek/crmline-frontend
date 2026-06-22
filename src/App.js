@@ -13,6 +13,7 @@ import DashboardPage from './pages/DashboardPage';
 import SettingsPage from './pages/SettingsPage';
 import UserProfilePage from './pages/UserProfilePage';
 import AccountPage from './pages/AccountPage';
+import InboxAnalyticsPage from './pages/InboxAnalyticsPage';
 import LockScreen from './components/LockScreen';
 import UpdatePrompt from './components/UpdatePrompt';
 
@@ -82,6 +83,7 @@ function AppInit() {
         <Route path="/account"         element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
         <Route path="/tasks"                   element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
         <Route path="/inbox"                   element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
+        <Route path="/inbox/analytics"         element={<PrivateRoute><InboxAnalyticsPage /></PrivateRoute>} />
         <Route path="/funnel/:id"              element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
         <Route path="/funnel/:id/deal/new"     element={<PrivateRoute><DashboardPage /></PrivateRoute>} />
         <Route path="/funnel/:id/deal/:dealId" element={<PrivateRoute><DashboardPage /></PrivateRoute>} />

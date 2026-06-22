@@ -2,10 +2,13 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useSelector } from 'react-redux';
 import axios from 'axios';
 import toast from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
 import { connectSocket, disconnectSocket, getSocket } from '../utils/socket';
 import {
   Send, MessageSquare, Search, Loader2,
-  CheckCheck, Clock, User, X, ChevronDown, Smile,
+  CheckCheck, User, X, Smile, Trash2, Paperclip, FileText,
+  StickyNote, CheckCircle2, RotateCcw, Info, Phone, Mail, Hash, ChevronRight,
+  Plus, Check, Tag, UserCheck, Search as SearchIcon, TrendingUp,
 } from 'lucide-react';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5002/api';
@@ -57,19 +60,30 @@ function fmtTime(d) {
   return `${String(dt.getDate()).padStart(2,'0')}.${String(dt.getMonth()+1).padStart(2,'0')}`;
 }
 
+function slaInfo(lastMessageAt, status) {
+  if (!lastMessageAt || status !== 'unanswered') return null;
+  const mins = Math.floor((Date.now() - new Date(lastMessageAt)) / 60000);
+  if (mins < 30)  return { label: mins < 1 ? 'Hozir' : `${mins}d`, cls: 'bg-emerald-50 text-emerald-600' };
+  if (mins < 60)  return { label: `${mins}d`, cls: 'bg-amber-50 text-amber-600' };
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24)   return { label: `${hrs}s`, cls: 'bg-red-50 text-red-600' };
+  return { label: `${Math.floor(hrs/24)}k`, cls: 'bg-red-100 text-red-700' };
+}
+
 /* ─── Conversation List Item ────────────────────────────── */
-function ConvItem({ conv, active, onClick }) {
-  const Icon = CHANNEL_ICON[conv.channel] || CHANNEL_ICON.telegram;
+function ConvItem({ conv, active, onClick, onContextMenu }) {
+  const Icon   = CHANNEL_ICON[conv.channel] || CHANNEL_ICON.telegram;
   const iconCls = CHANNEL_COLOR[conv.channel] || CHANNEL_COLOR.telegram;
+  const sla    = slaInfo(conv.lastMessageAt, conv.status);
 
   return (
     <button
       onClick={onClick}
+      onContextMenu={e => { e.preventDefault(); onContextMenu(e, conv._id); }}
       className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors border-b border-surface-100 ${
         active ? 'bg-primary-50' : 'hover:bg-surface-50'
       }`}
     >
-      {/* Avatar */}
       <div className="relative shrink-0">
         <div className="w-10 h-10 rounded-full bg-primary-100 flex items-center justify-center text-sm font-bold text-primary-700">
           {initials(conv.title)}
@@ -78,24 +92,50 @@ function ConvItem({ conv, active, onClick }) {
           <Icon />
         </span>
       </div>
-
-      {/* Info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center justify-between gap-2">
           <span className="text-sm font-semibold text-ink truncate">{conv.title || 'Anonim'}</span>
-          <span className="text-[10px] text-ink-disabled shrink-0">{fmtTime(conv.lastMessageAt)}</span>
+          <div className="flex items-center gap-1 shrink-0">
+            {sla && (
+              <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full ${sla.cls}`}>
+                {sla.label}
+              </span>
+            )}
+            <span className="text-[10px] text-ink-disabled">{fmtTime(conv.lastMessageAt)}</span>
+          </div>
         </div>
         <div className="flex items-center justify-between gap-2 mt-0.5">
           <span className="text-xs text-ink-tertiary truncate">{conv.lastMessage || '...'}</span>
-          {conv.unreadCount > 0 && (
+          {conv.unreadCount > 0 ? (
             <span className="shrink-0 min-w-[18px] h-[18px] rounded-full bg-primary-600 text-white text-[10px] font-bold flex items-center justify-center px-1">
               {conv.unreadCount > 99 ? '99+' : conv.unreadCount}
             </span>
-          )}
+          ) : conv.assignedTo?.name ? (
+            <span className="shrink-0 text-[10px] text-ink-disabled bg-surface-100 rounded-full px-1.5 py-0.5 truncate max-w-[60px]">
+              {conv.assignedTo.name.split(' ')[0]}
+            </span>
+          ) : null}
         </div>
+        {conv.labels?.length > 0 && (
+          <div className="flex gap-1 mt-1 flex-wrap">
+            {conv.labels.slice(0, 3).map(l => (
+              <span key={l} className="text-[9px] font-medium px-1.5 py-0 rounded-full bg-primary-50 text-primary-600 border border-primary-100">
+                #{l}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
     </button>
   );
+}
+
+/* ─── File size formatter ───────────────────────────────── */
+function fmtSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /* ─── Sticker image (lazy fetch with module-level cache) ── */
@@ -131,14 +171,105 @@ function StickerImage({ fileId }) {
   return <img src={info.url} alt="sticker" className="w-full h-full object-contain" />;
 }
 
+/* ─── Media attachment (lazy fetch URL, cached) ─────────── */
+const mediaUrlCache = new Map();
+
+function MediaAttachment({ msg, isOut }) {
+  const { mediaType, mediaFileId, mediaFileName, mediaMimeType, mediaFileSize, mediaDuration } = msg;
+  const [info, setInfo] = useState(mediaUrlCache.get(mediaFileId) || null);
+
+  useEffect(() => {
+    if (!mediaFileId || info) return;
+    axios.get(`${API_URL}/inbox/media-file/${encodeURIComponent(mediaFileId)}`)
+      .then(r => { const d = { url: r.data.url, ext: r.data.ext || '' }; mediaUrlCache.set(mediaFileId, d); setInfo(d); })
+      .catch(() => {});
+  }, [mediaFileId, info]);
+
+  const textCls = isOut ? 'text-white/80' : 'text-ink-tertiary';
+
+  if (!info) return (
+    <div className="flex items-center gap-2 py-1">
+      <Loader2 className="w-4 h-4 animate-spin opacity-50" />
+      <span className={`text-xs ${textCls}`}>Yuklanmoqda...</span>
+    </div>
+  );
+
+  if (mediaType === 'photo') return (
+    <a href={info.url} target="_blank" rel="noreferrer" className="block">
+      <img src={info.url} alt="photo" className="max-w-[260px] max-h-64 rounded-xl object-cover" />
+    </a>
+  );
+
+  if (mediaType === 'video' || mediaType === 'video_note') return (
+    <video controls src={info.url} className="max-w-[260px] max-h-48 rounded-xl"
+      style={{ display: 'block' }}>
+      <source src={info.url} type={mediaMimeType || 'video/mp4'} />
+    </video>
+  );
+
+  if (mediaType === 'voice' || mediaType === 'audio') return (
+    <div className="min-w-[200px]">
+      {mediaFileName && mediaFileName !== 'audio' && (
+        <p className={`text-xs font-medium mb-1 truncate max-w-[220px] ${isOut ? 'text-white' : 'text-ink'}`}>{mediaFileName}</p>
+      )}
+      <audio controls src={info.url} className="w-full h-8" style={{ minWidth: 200 }}>
+        <source src={info.url} type={mediaMimeType || 'audio/ogg'} />
+      </audio>
+      {mediaDuration > 0 && (
+        <p className={`text-[10px] mt-0.5 ${textCls}`}>{mediaDuration}s</p>
+      )}
+    </div>
+  );
+
+  if (mediaType === 'document') return (
+    <a href={info.url} target="_blank" rel="noreferrer" download={mediaFileName}
+      className={`flex items-center gap-2 py-1 hover:opacity-80 transition-opacity`}>
+      <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${isOut ? 'bg-white/20' : 'bg-surface-100'}`}>
+        <span className="text-lg">📄</span>
+      </div>
+      <div className="min-w-0">
+        <p className={`text-xs font-medium truncate max-w-[180px] ${isOut ? 'text-white' : 'text-ink'}`}>{mediaFileName || 'Fayl'}</p>
+        <p className={`text-[10px] ${textCls}`}>{fmtSize(mediaFileSize)}</p>
+      </div>
+    </a>
+  );
+
+  return <a href={info.url} target="_blank" rel="noreferrer" className={`text-xs underline ${textCls}`}>Faylni ochish</a>;
+}
+
 /* ─── Chat Bubble ───────────────────────────────────────── */
-function Bubble({ msg }) {
-  const isOut    = msg.direction === 'out';
+function Bubble({ msg, onContextMenu }) {
+  const isOut     = msg.direction === 'out';
+  const isNote    = msg.isNote;
   const isSticker = msg.mediaType === 'sticker';
+  const hasMedia  = msg.mediaFileId && ['photo','video','video_note','voice','audio','document'].includes(msg.mediaType);
+
+  // Internal note — special style
+  if (isNote) {
+    return (
+      <div
+        onContextMenu={e => { e.preventDefault(); onContextMenu(e, msg._id); }}
+        className="flex justify-center mb-2"
+      >
+        <div className="max-w-[80%] bg-amber-50 border border-amber-200 rounded-2xl px-3 py-2 text-sm">
+          <div className="flex items-center gap-1.5 mb-1">
+            <StickyNote className="w-3 h-3 text-amber-500 shrink-0" />
+            <span className="text-[10px] font-semibold text-amber-600">Ichki eslatma</span>
+            {msg.sentBy?.name && <span className="text-[10px] text-amber-500">· {msg.sentBy.name}</span>}
+          </div>
+          <p className="text-ink leading-relaxed">{msg.text}</p>
+          <p className="text-[10px] text-amber-400 mt-1 text-right">{fmtTime(msg.createdAt)}</p>
+        </div>
+      </div>
+    );
+  }
 
   if (isSticker) {
     return (
-      <div className={`flex ${isOut ? 'justify-end' : 'justify-start'} mb-1`}>
+      <div
+        onContextMenu={e => { e.preventDefault(); onContextMenu(e, msg._id); }}
+        className={`flex ${isOut ? 'justify-end' : 'justify-start'} mb-1 select-none`}
+      >
         <div className={`flex flex-col gap-1 ${isOut ? 'items-end' : 'items-start'}`}>
           <div className="w-28 h-28 flex items-center justify-center">
             <StickerImage fileId={msg.stickerFileId} />
@@ -158,7 +289,10 @@ function Bubble({ msg }) {
   }
 
   return (
-    <div className={`flex ${isOut ? 'justify-end' : 'justify-start'} mb-1`}>
+    <div
+      onContextMenu={e => { e.preventDefault(); onContextMenu(e, msg._id); }}
+      className={`flex ${isOut ? 'justify-end' : 'justify-start'} mb-1`}
+    >
       <div
         className={`max-w-[72%] px-3 py-2 rounded-2xl text-sm leading-relaxed ${
           isOut
@@ -166,10 +300,11 @@ function Bubble({ msg }) {
             : 'bg-white border border-surface-200 text-ink rounded-bl-sm'
         }`}
       >
-        {msg.mediaType && msg.mediaType !== 'sticker' && !msg.text && (
+        {hasMedia && <MediaAttachment msg={msg} isOut={isOut} />}
+        {msg.text && <p className={hasMedia ? 'mt-1' : ''}>{msg.text}</p>}
+        {!hasMedia && !msg.text && msg.mediaType && (
           <span className="italic text-xs opacity-70">[{msg.mediaType}]</span>
         )}
-        {msg.text && <span>{msg.text}</span>}
         <div className={`flex items-center gap-1 mt-1 justify-end ${isOut ? 'text-white/60' : 'text-ink-disabled'}`}>
           <span className="text-[10px]">{fmtTime(msg.createdAt)}</span>
           {isOut && <CheckCheck className="w-3 h-3" />}
@@ -181,6 +316,7 @@ function Bubble({ msg }) {
 
 /* ─── Main InboxPage ────────────────────────────────────── */
 export default function InboxPage() {
+  const navigate = useNavigate();
   const orgId = useSelector(s => s.auth.user?.organization?.id || s.auth.user?.organization?._id);
 
   const [conversations, setConversations]   = useState([]);
@@ -191,16 +327,43 @@ export default function InboxPage() {
   const [loadingConvs,  setLoadingConvs]    = useState(true);
   const [loadingMsgs,   setLoadingMsgs]     = useState(false);
   const [sending,       setSending]         = useState(false);
-  const [showStickers,  setShowStickers]    = useState(false);
-  const [orgPacks,      setOrgPacks]        = useState([]);   // pack names from settings
+  const [inboxTab,      setInboxTab]        = useState('unanswered');
+  const [ctxMenu,       setCtxMenu]         = useState(null); // { x, y, type:'conv'|'msg', id }
+  const [showStickers,  setShowStickers]    = useState(() => localStorage.getItem('inbox_sticker_panel') === 'true');
+  const [orgPacks,      setOrgPacks]        = useState([]);
   const [activePackIdx, setActivePackIdx]   = useState(0);
-  const [packStickers,  setPackStickers]    = useState({});   // { packName: [stickers] }
+  const [packStickers,  setPackStickers]    = useState({});
   const [loadingPack,   setLoadingPack]     = useState(false);
+  const [pendingFile,   setPendingFile]     = useState(null);
+  const [isNoteMode,    setIsNoteMode]      = useState(false);
+  const [quickReplies,  setQuickReplies]    = useState([]);
+  const [showQR,        setShowQR]          = useState(false);
+  const [qrFilter,      setQrFilter]        = useState('');
+  const [qrIdx,         setQrIdx]           = useState(0);
+  const [showInfo,        setShowInfo]          = useState(false);
+  const [contactInfo,     setContactInfo]       = useState(null);
+  const [loadingInfo,     setLoadingInfo]       = useState(false);
+  const [contactForm,     setContactForm]       = useState({ name: '', phone: '', email: '' });
+  const [showContactForm, setShowContactForm]   = useState(false);
+  const [savingContact,   setSavingContact]     = useState(false);
+  // Labels
+  const [labelFilter,     setLabelFilter]       = useState('');   // filter sidebar by label
+  const [showLabelPanel,  setShowLabelPanel]    = useState(false);
+  const [labelInput,      setLabelInput]        = useState('');
+  // Reassign
+  const [showReassign,    setShowReassign]      = useState(false);
+  const [orgUsers,        setOrgUsers]          = useState([]);
+  // Message search
+  const [msgSearch,       setMsgSearch]         = useState('');
+  const [showMsgSearch,   setShowMsgSearch]     = useState(false);
+  const fileInputRef = useRef(null);
+  const textareaRef  = useRef(null);
 
   const messagesEndRef = useRef(null);
   const activeConv = conversations.find(c => c._id === activeConvId);
 
   const loadConversations = useCallback(async () => {
+    setLoadingConvs(true);
     try {
       const res = await axios.get(`${API_URL}/inbox`);
       setConversations(res.data.conversations || []);
@@ -234,14 +397,30 @@ export default function InboxPage() {
       if (isOpen) {
         setMessages(prev => prev.some(m => String(m._id) === String(message._id)) ? prev : [...prev, message]);
       }
-      setConversations(prev => prev.map(c =>
-        String(c._id) === String(conversationId)
-          ? { ...c, lastMessage: message.text || `[${message.mediaType || 'media'}]`, lastMessageAt: message.createdAt, unreadCount: isOpen ? 0 : (c.unreadCount || 0) + 1 }
-          : c
-      ).sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt)));
+      setConversations(prev => {
+        const exists = prev.some(c => String(c._id) === String(conversationId));
+        if (!exists) {
+          // New conversation — reload to get full data
+          loadConversations();
+          return prev;
+        }
+        return prev.map(c =>
+          String(c._id) === String(conversationId)
+            ? { ...c, lastMessage: message.text || `[${message.mediaType || 'media'}]`, lastMessageAt: message.createdAt, unreadCount: isOpen ? 0 : (c.unreadCount || 0) + 1 }
+            : c
+        ).sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
+      });
     };
 
-    const onConvUpdated = () => loadConversations();
+    const onConvUpdated = ({ conversationId, updates } = {}) => {
+      if (updates && conversationId) {
+        setConversations(prev => prev.map(c =>
+          String(c._id) === String(conversationId) ? { ...c, ...updates } : c
+        ));
+      } else {
+        loadConversations();
+      }
+    };
 
     socket.on('inbox:message', onMessage);
     socket.on('inbox:conversation-updated', onConvUpdated);
@@ -259,8 +438,13 @@ export default function InboxPage() {
     try {
       const res = await axios.get(`${API_URL}/inbox/${conv._id}/messages`);
       setMessages(res.data.messages || []);
-      // Mark as read locally
-      setConversations(prev => prev.map(c => c._id === conv._id ? { ...c, unreadCount: 0 } : c));
+      // Apply updated conversation from server (may include auto-assign)
+      if (res.data.conversation) {
+        const updated = res.data.conversation;
+        setConversations(prev => prev.map(c =>
+          c._id === conv._id ? { ...c, ...updated, unreadCount: 0 } : c
+        ));
+      }
     } catch {
       toast.error('Xato');
     } finally {
@@ -277,12 +461,16 @@ export default function InboxPage() {
     setSending(true);
     const draft = text.trim();
     setText('');
+    setShowQR(false);
     try {
-      const res = await axios.post(`${API_URL}/inbox/${activeConvId}/send`, { text: draft });
+      const body = isNoteMode ? { text: draft, isNote: 'true' } : { text: draft };
+      const res = await axios.post(`${API_URL}/inbox/${activeConvId}/send`, body);
       setMessages(prev => prev.some(m => String(m._id) === String(res.data.message._id)) ? prev : [...prev, res.data.message]);
-      setConversations(prev => prev.map(c =>
-        c._id === activeConvId ? { ...c, lastMessage: draft, lastMessageAt: new Date() } : c
-      ));
+      if (!isNoteMode) {
+        setConversations(prev => prev.map(c =>
+          c._id === activeConvId ? { ...c, lastMessage: draft, lastMessageAt: new Date() } : c
+        ));
+      }
     } catch (e) {
       setText(draft);
       toast.error(e.response?.data?.message || 'Yuborishda xato');
@@ -291,10 +479,13 @@ export default function InboxPage() {
     }
   };
 
-  // Load org sticker packs from settings
+  // Load org sticker packs + quick replies
   useEffect(() => {
     axios.get(`${API_URL.replace('/api', '')}/api/organization/sticker-packs`)
       .then(r => setOrgPacks(r.data.stickerPacks || []))
+      .catch(() => {});
+    axios.get(`${API_URL}/inbox/quick-replies`)
+      .then(r => setQuickReplies(r.data.replies || []))
       .catch(() => {});
   }, []);
 
@@ -319,6 +510,185 @@ export default function InboxPage() {
     }
   }, [showStickers, activePackIdx, orgPacks, loadPack]);
 
+  const toggleStickers = () => {
+    setShowStickers(v => {
+      const next = !v;
+      localStorage.setItem('inbox_sticker_panel', String(next));
+      if (next) setShowInfo(false);
+      return next;
+    });
+  };
+
+  // Quick reply: watch "/" in textarea
+  const handleTextChange = (e) => {
+    const val = e.target.value;
+    setText(val);
+    if (val.startsWith('/')) {
+      setQrFilter(val.slice(1).toLowerCase());
+      setShowQR(true);
+      setQrIdx(0);
+    } else {
+      setShowQR(false);
+    }
+  };
+
+  const filteredQR = quickReplies.filter(r =>
+    !qrFilter || r.title.toLowerCase().includes(qrFilter) || r.text.toLowerCase().includes(qrFilter)
+  );
+
+  const selectQR = (reply) => {
+    setText(reply.text);
+    setShowQR(false);
+    textareaRef.current?.focus();
+  };
+
+  const handleTextKeyDown = (e) => {
+    if (showQR && filteredQR.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setQrIdx(i => Math.min(i + 1, filteredQR.length - 1)); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setQrIdx(i => Math.max(i - 1, 0)); return; }
+      if (e.key === 'Enter')     { e.preventDefault(); selectQR(filteredQR[qrIdx]); return; }
+      if (e.key === 'Escape')    { setShowQR(false); return; }
+    }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); pendingFile ? handleSendFile() : handleSend(); }
+  };
+
+  // Resolve / Reopen conversation
+  const handleResolve = async () => {
+    if (!activeConvId) return;
+    try {
+      await axios.put(`${API_URL}/inbox/${activeConvId}/status`, { status: 'closed' });
+      setConversations(prev => prev.filter(c => c._id !== activeConvId));
+      setActiveConvId(null);
+      setMessages([]);
+      toast.success('Chat yopildi');
+    } catch { toast.error('Xato'); }
+  };
+
+  // Contact info panel
+  const toggleInfo = async () => {
+    if (showInfo) { setShowInfo(false); return; }
+    setShowInfo(true);
+    setShowStickers(false);
+    setShowContactForm(false);
+    localStorage.setItem('inbox_sticker_panel', 'false');
+    if (!activeConvId) return;
+    setLoadingInfo(true);
+    try {
+      const res = await axios.get(`${API_URL}/inbox/${activeConvId}/contact-info`);
+      setContactInfo(res.data);
+      setContactForm({ name: res.data.conv?.title || '', phone: '', email: '' });
+    } catch { toast.error('Ma\'lumot yuklanmadi'); }
+    finally { setLoadingInfo(false); }
+  };
+
+  const handleCreateContact = async () => {
+    if (!activeConvId || savingContact) return;
+    setSavingContact(true);
+    try {
+      const res = await axios.post(`${API_URL}/inbox/${activeConvId}/create-contact`, contactForm);
+      if (res.data.alreadyExists) {
+        toast.success('Bu kontakt allaqachon mavjud');
+      } else {
+        toast.success('Kontakt yaratildi');
+      }
+      // Reload contact info to show linked contact
+      const info = await axios.get(`${API_URL}/inbox/${activeConvId}/contact-info`);
+      setContactInfo(info.data);
+      setShowContactForm(false);
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Xato');
+    } finally {
+      setSavingContact(false);
+    }
+  };
+
+  // Load org users for reassign
+  useEffect(() => {
+    axios.get(`${API_URL.replace('/api', '')}/api/organization/users`)
+      .then(r => setOrgUsers(r.data.users || []))
+      .catch(() => {});
+  }, []);
+
+  // Reassign
+  const handleReassign = async (userId) => {
+    if (!activeConvId) return;
+    setShowReassign(false);
+    try {
+      await axios.put(`${API_URL}/inbox/${activeConvId}/assign`, { assignedTo: userId || null });
+      setConversations(prev => prev.map(c =>
+        c._id === activeConvId
+          ? { ...c, assignedTo: userId ? orgUsers.find(u => u._id === userId) : null }
+          : c
+      ));
+      toast.success(userId ? 'Agent belgilandi' : 'Agent olib tashlandi');
+    } catch { toast.error('Xato'); }
+  };
+
+  // Labels
+  const activeLabels = activeConv?.labels || [];
+
+  const handleAddLabel = async () => {
+    const label = labelInput.trim().replace(/^#/, '');
+    if (!label || !activeConvId) return;
+    if (activeLabels.includes(label)) { setLabelInput(''); return; }
+    const next = [...activeLabels, label];
+    setLabelInput('');
+    try {
+      await axios.put(`${API_URL}/inbox/${activeConvId}/labels`, { labels: next });
+      setConversations(prev => prev.map(c => c._id === activeConvId ? { ...c, labels: next } : c));
+    } catch { toast.error('Xato'); }
+  };
+
+  const handleRemoveLabel = async (label) => {
+    if (!activeConvId) return;
+    const next = activeLabels.filter(l => l !== label);
+    try {
+      await axios.put(`${API_URL}/inbox/${activeConvId}/labels`, { labels: next });
+      setConversations(prev => prev.map(c => c._id === activeConvId ? { ...c, labels: next } : c));
+    } catch { toast.error('Xato'); }
+  };
+
+  // All unique labels in org for sidebar filter
+  const allLabels = [...new Set(conversations.flatMap(c => c.labels || []))];
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const isImage = file.type.startsWith('image/');
+    const isVideo = file.type.startsWith('video/');
+    const previewUrl = (isImage || isVideo) ? URL.createObjectURL(file) : null;
+    setPendingFile({ file, previewUrl, type: isImage ? 'image' : isVideo ? 'video' : 'document' });
+    e.target.value = '';
+  };
+
+  const cancelFile = () => {
+    if (pendingFile?.previewUrl) URL.revokeObjectURL(pendingFile.previewUrl);
+    setPendingFile(null);
+  };
+
+  const handleSendFile = async () => {
+    if (!pendingFile || !activeConvId || sending) return;
+    setSending(true);
+    const fd = new FormData();
+    fd.append('file', pendingFile.file);
+    if (text.trim()) fd.append('text', text.trim());
+    try {
+      const res = await axios.post(`${API_URL}/inbox/${activeConvId}/send`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      });
+      setMessages(prev => prev.some(m => String(m._id) === String(res.data.message._id)) ? prev : [...prev, res.data.message]);
+      setConversations(prev => prev.map(c =>
+        c._id === activeConvId ? { ...c, lastMessage: res.data.message.text || `[${pendingFile.file.name}]`, lastMessageAt: new Date() } : c
+      ));
+      cancelFile();
+      setText('');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Yuborishda xato');
+    } finally {
+      setSending(false);
+    }
+  };
+
   const handleSendSticker = async (fileId) => {
     if (!activeConvId || sending) return;
     setSending(true);
@@ -335,28 +705,115 @@ export default function InboxPage() {
     }
   };
 
-  const filteredConvs = conversations.filter(c =>
-    !search || c.title?.toLowerCase().includes(search.toLowerCase())
-  );
+  const handleDeleteConversation = async (convId) => {
+    setCtxMenu(null);
+    if (!window.confirm("Bu chatni o'chirishni tasdiqlaysizmi? Barcha xabarlar ham o'chadi.")) return;
+    try {
+      await axios.delete(`${API_URL}/inbox/${convId}`);
+      setConversations(prev => prev.filter(c => c._id !== convId));
+      if (activeConvId === convId) { setActiveConvId(null); setMessages([]); }
+    } catch {
+      toast.error("O'chirishda xato");
+    }
+  };
 
+  const handleDeleteMessage = async (msgId) => {
+    setCtxMenu(null);
+    try {
+      await axios.delete(`${API_URL}/inbox/messages/${msgId}`);
+      setMessages(prev => prev.filter(m => m._id !== msgId));
+    } catch {
+      toast.error("O'chirishda xato");
+    }
+  };
+
+  const openCtxMenu = (e, type, id) => {
+    setCtxMenu({ x: e.clientX, y: e.clientY, type, id });
+  };
+
+  const filteredConvs = conversations.filter(c => {
+    const tabMatch    = inboxTab === 'unanswered' ? c.status === 'unanswered' : c.status !== 'unanswered';
+    const searchMatch = !search || c.title?.toLowerCase().includes(search.toLowerCase());
+    const labelMatch  = !labelFilter || (c.labels || []).includes(labelFilter);
+    return tabMatch && searchMatch && labelMatch;
+  });
+
+  const displayedMessages = msgSearch.trim()
+    ? messages.filter(m => m.text?.toLowerCase().includes(msgSearch.toLowerCase()))
+    : messages;
+
+  const unansweredCount = conversations.filter(c => c.status === 'unanswered').reduce((s, c) => s + (c.unreadCount || 0), 0);
   const totalUnread = conversations.reduce((s, c) => s + (c.unreadCount || 0), 0);
 
   return (
-    <div className="flex h-full overflow-hidden">
+    <div className="flex h-full overflow-hidden" onClick={() => { ctxMenu && setCtxMenu(null); showReassign && setShowReassign(false); showLabelPanel && setShowLabelPanel(false); }}>
+      {/* ── Context menu ── */}
+      {ctxMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onContextMenu={e => e.preventDefault()} />
+          <div
+            className="fixed z-50 bg-white border border-surface-200 rounded-xl shadow-xl py-1 min-w-[160px]"
+            style={{ left: Math.min(ctxMenu.x, window.innerWidth - 180), top: Math.min(ctxMenu.y, window.innerHeight - 80) }}
+            onClick={e => e.stopPropagation()}
+          >
+            <button
+              onClick={() => ctxMenu.type === 'conv' ? handleDeleteConversation(ctxMenu.id) : handleDeleteMessage(ctxMenu.id)}
+              className="w-full flex items-center gap-2.5 px-4 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors"
+            >
+              <Trash2 className="w-4 h-4" />
+              O'chirish
+            </button>
+          </div>
+        </>
+      )}
+
       {/* ── Left panel: conversation list ── */}
       <div className="w-80 shrink-0 flex flex-col border-r border-surface-200 bg-white">
         {/* Header */}
-        <div className="px-4 py-3 border-b border-surface-200">
+        <div className="px-4 pt-3 pb-0 border-b border-surface-200">
           <div className="flex items-center gap-2 mb-2">
             <MessageSquare className="w-4 h-4 text-primary-600" />
             <span className="font-bold text-ink">Inbox</span>
             {totalUnread > 0 && (
-              <span className="ml-auto text-[10px] font-bold bg-primary-600 text-white rounded-full px-1.5 py-0.5">
+              <span className="text-[10px] font-bold bg-primary-600 text-white rounded-full px-1.5 py-0.5">
                 {totalUnread}
               </span>
             )}
+            <button
+              onClick={() => navigate('/inbox/analytics')}
+              title="Analitika"
+              className="ml-auto w-7 h-7 rounded-lg bg-surface-100 hover:bg-primary-50 hover:text-primary-600 text-ink-disabled flex items-center justify-center transition-colors"
+            >
+              <TrendingUp className="w-3.5 h-3.5" />
+            </button>
           </div>
-          {/* Search */}
+          {/* Tabs */}
+          <div className="flex -mb-px">
+            {[
+              { key: 'unanswered', label: 'Javob berilmagan' },
+              { key: 'accepted',   label: 'Qabul qilingan'  },
+            ].map(t => (
+              <button
+                key={t.key}
+                onClick={() => { setInboxTab(t.key); setActiveConvId(null); }}
+                className={`flex-1 text-xs font-medium py-2 border-b-2 transition-colors ${
+                  inboxTab === t.key
+                    ? 'border-primary-500 text-primary-600'
+                    : 'border-transparent text-ink-tertiary hover:text-ink'
+                }`}
+              >
+                {t.label}
+                {t.key === 'unanswered' && unansweredCount > 0 && (
+                  <span className="ml-1 inline-flex items-center justify-center w-4 h-4 rounded-full bg-primary-600 text-white text-[9px] font-bold">
+                    {unansweredCount > 99 ? '99+' : unansweredCount}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+        {/* Search */}
+        <div className="px-3 py-2 border-b border-surface-100">
           <div className="relative">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-disabled" />
             <input
@@ -368,6 +825,25 @@ export default function InboxPage() {
           </div>
         </div>
 
+        {/* Label filter chips */}
+        {allLabels.length > 0 && (
+          <div className="px-3 pb-2 flex flex-wrap gap-1">
+            {allLabels.map(l => (
+              <button
+                key={l}
+                onClick={() => setLabelFilter(labelFilter === l ? '' : l)}
+                className={`text-[10px] font-medium px-2 py-0.5 rounded-full border transition-colors ${
+                  labelFilter === l
+                    ? 'bg-primary-600 text-white border-primary-600'
+                    : 'bg-surface-50 text-ink-tertiary border-surface-200 hover:border-primary-300 hover:text-primary-600'
+                }`}
+              >
+                #{l}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* List */}
         <div className="flex-1 overflow-y-auto">
           {loadingConvs ? (
@@ -377,8 +853,17 @@ export default function InboxPage() {
           ) : filteredConvs.length === 0 ? (
             <div className="py-12 text-center text-ink-tertiary">
               <MessageSquare className="w-8 h-8 mx-auto mb-2 opacity-30" />
-              <p className="text-sm">Xabarlar yo'q</p>
-              <p className="text-xs mt-1 px-4">Telegram botingizni ulang va foydalanuvchilar yozishni boshlashsin</p>
+              {inboxTab === 'unanswered' ? (
+                <>
+                  <p className="text-sm">Javob berilmagan xabar yo'q</p>
+                  <p className="text-xs mt-1 px-4 text-ink-disabled">Yangi xabarlar bu yerda ko'rinadi</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm">Qabul qilingan chat yo'q</p>
+                  <p className="text-xs mt-1 px-4 text-ink-disabled">Ochilgan chatlar bu yerga o'tadi</p>
+                </>
+              )}
             </div>
           ) : (
             filteredConvs.map(conv => (
@@ -387,6 +872,7 @@ export default function InboxPage() {
                 conv={conv}
                 active={conv._id === activeConvId}
                 onClick={() => openConv(conv)}
+                onContextMenu={(e, id) => openCtxMenu(e, 'conv', id)}
               />
             ))
           )}
@@ -405,13 +891,207 @@ export default function InboxPage() {
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-semibold text-ink truncate">{activeConv.title || 'Anonim'}</p>
-                {activeConv.username && <p className="text-xs text-ink-tertiary">@{activeConv.username}</p>}
+                <div className="flex items-center gap-2">
+                  {activeConv.username && <p className="text-xs text-ink-tertiary">@{activeConv.username}</p>}
+                  {activeConv.assignedTo?.name && (
+                    <span className="text-xs text-emerald-600 bg-emerald-50 px-1.5 py-0 rounded-full flex items-center gap-1">
+                      <User className="w-3 h-3" />
+                      {activeConv.assignedTo.name.split(' ')[0]}
+                    </span>
+                  )}
+                </div>
               </div>
               <div className={`flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-full ${CHANNEL_COLOR[activeConv.channel] || ''}`}>
                 {(() => { const I = CHANNEL_ICON[activeConv.channel]; return I ? <I /> : null; })()}
                 <span className="ml-1 capitalize">{activeConv.channel}</span>
               </div>
+              {/* Message search toggle */}
+              <button
+                onClick={() => { setShowMsgSearch(v => !v); setMsgSearch(''); }}
+                title="Xabar qidirish"
+                className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                  showMsgSearch ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-ink-secondary hover:bg-surface-200'
+                }`}
+              >
+                <SearchIcon className="w-4 h-4" />
+              </button>
+              {/* Reassign */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowReassign(v => !v)}
+                  title="Agent o'zgartirish"
+                  className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                    showReassign ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-ink-secondary hover:bg-surface-200'
+                  }`}
+                >
+                  <UserCheck className="w-4 h-4" />
+                </button>
+                {showReassign && (
+                  <div className="absolute right-0 top-10 z-50 bg-white border border-surface-200 rounded-xl shadow-xl py-1 min-w-[180px]"
+                    onClick={e => e.stopPropagation()}>
+                    <p className="px-3 py-1.5 text-[10px] font-semibold text-ink-disabled uppercase tracking-wide">Agent tanlang</p>
+                    <button
+                      onClick={() => handleReassign(null)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-ink-secondary hover:bg-surface-50 transition-colors"
+                    >
+                      <div className="w-6 h-6 rounded-full bg-surface-200 flex items-center justify-center">
+                        <X className="w-3 h-3" />
+                      </div>
+                      Olib tashlash
+                    </button>
+                    {orgUsers.map(u => (
+                      <button
+                        key={u._id}
+                        onClick={() => handleReassign(u._id)}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-surface-50 transition-colors ${
+                          activeConv?.assignedTo?._id === u._id || activeConv?.assignedTo === u._id
+                            ? 'text-primary-600 font-medium' : 'text-ink'
+                        }`}
+                      >
+                        <div className="w-6 h-6 rounded-full bg-primary-100 flex items-center justify-center text-[10px] font-bold text-primary-700 shrink-0">
+                          {initials(u.name)}
+                        </div>
+                        <span className="truncate">{u.name}</span>
+                        {(activeConv?.assignedTo?._id === u._id || activeConv?.assignedTo === u._id) && (
+                          <Check className="w-3 h-3 ml-auto shrink-0" />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              {/* Label panel toggle */}
+              <div className="relative">
+                <button
+                  onClick={() => setShowLabelPanel(v => !v)}
+                  title="Yorliqlar"
+                  className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                    showLabelPanel ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-ink-secondary hover:bg-surface-200'
+                  }`}
+                >
+                  <Tag className="w-4 h-4" />
+                </button>
+                {showLabelPanel && (
+                  <div className="absolute right-0 top-10 z-50 bg-white border border-surface-200 rounded-xl shadow-xl p-3 w-64"
+                    onClick={e => e.stopPropagation()}>
+                    <p className="text-xs font-semibold text-ink mb-2">Yorliqlar</p>
+
+                    {/* Active labels on this chat */}
+                    {activeLabels.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mb-3">
+                        {activeLabels.map(l => (
+                          <span key={l} className="flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 border border-primary-200">
+                            #{l}
+                            <button onClick={() => handleRemoveLabel(l)} className="hover:text-red-500 transition-colors">
+                              <X className="w-2.5 h-2.5" />
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Existing org labels to pick from */}
+                    {allLabels.filter(l => !activeLabels.includes(l)).length > 0 && (
+                      <div className="mb-3">
+                        <p className="text-[10px] text-ink-disabled mb-1.5">Mavjud yorliqlar</p>
+                        <div className="flex flex-wrap gap-1">
+                          {allLabels.filter(l => !activeLabels.includes(l)).map(l => (
+                            <button
+                              key={l}
+                              onClick={async () => {
+                                const next = [...activeLabels, l];
+                                try {
+                                  await axios.put(`${API_URL}/inbox/${activeConvId}/labels`, { labels: next });
+                                  setConversations(prev => prev.map(c => c._id === activeConvId ? { ...c, labels: next } : c));
+                                } catch { toast.error('Xato'); }
+                              }}
+                              className="text-[10px] font-medium px-2 py-0.5 rounded-full border border-dashed border-surface-300 text-ink-tertiary hover:border-primary-400 hover:text-primary-600 hover:bg-primary-50 transition-colors"
+                            >
+                              + #{l}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* New label input */}
+                    <div className="flex gap-1">
+                      <input
+                        className="flex-1 border border-surface-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-primary-300"
+                        placeholder="Yangi yorliq..."
+                        value={labelInput}
+                        onChange={e => setLabelInput(e.target.value)}
+                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); handleAddLabel(); } }}
+                      />
+                      <button
+                        onClick={handleAddLabel}
+                        disabled={!labelInput.trim()}
+                        className="px-2.5 py-1.5 rounded-lg bg-primary-600 text-white text-xs hover:bg-primary-700 disabled:opacity-40 transition-colors"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* Resolve button */}
+              <button
+                onClick={handleResolve}
+                title="Chatni yopish"
+                className="shrink-0 flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 transition-colors"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Yopish</span>
+              </button>
+              {/* Info toggle */}
+              <button
+                onClick={toggleInfo}
+                title="Kontakt ma'lumotlari"
+                className={`shrink-0 w-8 h-8 rounded-lg flex items-center justify-center transition-colors ${
+                  showInfo ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-ink-secondary hover:bg-surface-200'
+                }`}
+              >
+                <Info className="w-4 h-4" />
+              </button>
             </div>
+
+            {/* Message search bar */}
+            {showMsgSearch && (
+              <div className="shrink-0 px-4 py-2 border-b border-surface-100 bg-white">
+                <div className="relative">
+                  <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-ink-disabled" />
+                  <input
+                    autoFocus
+                    className="w-full pl-9 pr-8 py-2 text-sm bg-surface-50 rounded-xl border border-surface-200 focus:outline-none focus:ring-2 focus:ring-primary-300"
+                    placeholder="Xabarlar ichida qidirish..."
+                    value={msgSearch}
+                    onChange={e => setMsgSearch(e.target.value)}
+                  />
+                  {msgSearch && (
+                    <button onClick={() => setMsgSearch('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-ink-disabled hover:text-ink">
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+                {msgSearch && (
+                  <p className="text-[10px] text-ink-tertiary mt-1 px-1">
+                    {displayedMessages.length} ta natija
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Active labels in header */}
+            {activeLabels.length > 0 && (
+              <div className="shrink-0 px-5 py-1.5 bg-white border-b border-surface-100 flex items-center gap-1.5 flex-wrap">
+                <Tag className="w-3 h-3 text-ink-disabled shrink-0" />
+                {activeLabels.map(l => (
+                  <span key={l} className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-primary-50 text-primary-700 border border-primary-200">
+                    #{l}
+                  </span>
+                ))}
+              </div>
+            )}
 
             {/* Messages */}
             <div className="flex-1 overflow-y-auto px-5 py-4">
@@ -419,46 +1099,284 @@ export default function InboxPage() {
                 <div className="flex items-center justify-center h-full">
                   <Loader2 className="w-5 h-5 animate-spin text-primary-400" />
                 </div>
-              ) : messages.length === 0 ? (
+              ) : displayedMessages.length === 0 ? (
                 <div className="flex flex-col items-center justify-center h-full text-ink-tertiary">
                   <MessageSquare className="w-8 h-8 mb-2 opacity-30" />
-                  <p className="text-sm">Xabarlar yo'q</p>
+                  <p className="text-sm">{msgSearch ? 'Xabar topilmadi' : 'Xabarlar yo\'q'}</p>
                 </div>
               ) : (
-                messages.map(msg => <Bubble key={msg._id} msg={msg} />)
+                displayedMessages.map(msg => (
+                  <Bubble
+                    key={msg._id}
+                    msg={msg}
+                    onContextMenu={(e, id) => openCtxMenu(e, 'msg', id)}
+                  />
+                ))
               )}
               <div ref={messagesEndRef} />
             </div>
 
             {/* Input */}
-            <div className="shrink-0 bg-white border-t border-surface-200 px-4 py-3 flex items-end gap-2">
-              <button
-                onClick={() => setShowStickers(v => !v)}
-                disabled={orgPacks.length === 0}
-                title={orgPacks.length === 0 ? 'Sozlamalarda sticker pack qo\'shing' : 'Sticker'}
-                className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
-                  showStickers ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-ink-secondary hover:bg-surface-200 disabled:opacity-30'
-                }`}
-              >
-                <Smile className="w-5 h-5" />
-              </button>
-              <textarea
-                className="flex-1 resize-none rounded-xl border border-surface-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary-300 max-h-32 min-h-[40px]"
-                placeholder="Xabar yozing..."
-                rows={1}
-                value={text}
-                onChange={e => setText(e.target.value)}
-                onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-              />
-              <button
-                onClick={handleSend}
-                disabled={!text.trim() || sending}
-                className="shrink-0 w-10 h-10 rounded-xl bg-primary-600 text-white flex items-center justify-center hover:bg-primary-700 disabled:opacity-40 transition-colors"
-              >
-                {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-              </button>
+            <div className="relative shrink-0 bg-white border-t border-surface-200 px-4 py-3 space-y-2">
+              {/* Note mode indicator */}
+              {isNoteMode && (
+                <div className="flex items-center gap-2 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-700">
+                  <StickyNote className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  <span className="font-medium">Ichki eslatma rejimi — Telegramga yuborilmaydi</span>
+                </div>
+              )}
+
+              {/* File preview */}
+              {pendingFile && (
+                <div className="flex items-center gap-2 p-2 bg-surface-50 rounded-xl border border-surface-200">
+                  {pendingFile.type === 'image' && (
+                    <img src={pendingFile.previewUrl} alt="preview" className="w-12 h-12 rounded-lg object-cover shrink-0" />
+                  )}
+                  {pendingFile.type === 'video' && (
+                    <video src={pendingFile.previewUrl} className="w-12 h-12 rounded-lg object-cover shrink-0" muted />
+                  )}
+                  {pendingFile.type === 'document' && (
+                    <div className="w-12 h-12 rounded-lg bg-primary-50 flex items-center justify-center shrink-0">
+                      <FileText className="w-6 h-6 text-primary-500" />
+                    </div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium text-ink truncate">{pendingFile.file.name}</p>
+                    <p className="text-[10px] text-ink-tertiary">{fmtSize(pendingFile.file.size)}</p>
+                  </div>
+                  <button onClick={cancelFile} className="shrink-0 w-6 h-6 rounded-full hover:bg-surface-200 flex items-center justify-center text-ink-disabled hover:text-ink transition-colors">
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* Quick reply dropdown */}
+              {showQR && filteredQR.length > 0 && (
+                <div className="absolute bottom-[80px] left-0 right-0 mx-4 bg-white border border-surface-200 rounded-xl shadow-xl overflow-hidden z-30 max-h-48 overflow-y-auto">
+                  {filteredQR.map((r, i) => (
+                    <button
+                      key={r._id}
+                      onClick={() => selectQR(r)}
+                      className={`w-full flex flex-col items-start px-3 py-2 text-left transition-colors ${i === qrIdx ? 'bg-primary-50' : 'hover:bg-surface-50'}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-primary-600">/{r.title}</span>
+                        {r.shortcut && <span className="text-[10px] text-ink-disabled font-mono bg-surface-100 px-1 rounded">!{r.shortcut}</span>}
+                      </div>
+                      <span className="text-xs text-ink-tertiary truncate w-full mt-0.5">{r.text}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div className="flex items-end gap-2">
+                {/* Sticker toggle */}
+                <button
+                  onClick={toggleStickers}
+                  disabled={orgPacks.length === 0}
+                  title={orgPacks.length === 0 ? 'Sozlamalarda sticker pack qo\'shing' : 'Sticker'}
+                  className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                    showStickers ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-ink-secondary hover:bg-surface-200 disabled:opacity-30'
+                  }`}
+                >
+                  <Smile className="w-5 h-5" />
+                </button>
+
+                {/* Note mode toggle */}
+                <button
+                  onClick={() => setIsNoteMode(v => !v)}
+                  title="Ichki eslatma"
+                  className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                    isNoteMode ? 'bg-amber-100 text-amber-600' : 'bg-surface-100 text-ink-secondary hover:bg-surface-200'
+                  }`}
+                >
+                  <StickyNote className="w-5 h-5" />
+                </button>
+
+                {/* File attach (hidden in note mode) */}
+                {!isNoteMode && (
+                  <>
+                    <input ref={fileInputRef} type="file" className="hidden"
+                      accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.zip,.rar,.txt"
+                      onChange={handleFileSelect} />
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      title="Fayl yuborish"
+                      className="shrink-0 w-10 h-10 rounded-xl bg-surface-100 text-ink-secondary hover:bg-surface-200 flex items-center justify-center transition-colors"
+                    >
+                      <Paperclip className="w-5 h-5" />
+                    </button>
+                  </>
+                )}
+
+                <textarea
+                  ref={textareaRef}
+                  className={`flex-1 resize-none rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 max-h-32 min-h-[40px] ${
+                    isNoteMode
+                      ? 'border-amber-300 bg-amber-50 focus:ring-amber-300'
+                      : 'border-surface-200 focus:ring-primary-300'
+                  }`}
+                  placeholder={
+                    isNoteMode ? 'Ichki eslatma yozing... (faqat jamoa uchun)' :
+                    pendingFile ? 'Izoh qo\'shing (ixtiyoriy)...' :
+                    'Xabar yozing... yoki / bosing'
+                  }
+                  rows={1}
+                  value={text}
+                  onChange={handleTextChange}
+                  onKeyDown={handleTextKeyDown}
+                />
+                <button
+                  onClick={pendingFile ? handleSendFile : handleSend}
+                  disabled={(!text.trim() && !pendingFile) || sending}
+                  className={`shrink-0 w-10 h-10 rounded-xl text-white flex items-center justify-center disabled:opacity-40 transition-colors ${
+                    isNoteMode ? 'bg-amber-500 hover:bg-amber-600' : 'bg-primary-600 hover:bg-primary-700'
+                  }`}
+                >
+                  {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                </button>
+              </div>
             </div>
           </div>
+
+          {/* ── Contact info panel ── */}
+          {showInfo && (
+            <div className="w-72 shrink-0 flex flex-col border-l border-surface-200 bg-white overflow-y-auto">
+              <div className="flex items-center justify-between px-4 py-3 border-b border-surface-200">
+                <span className="text-sm font-semibold text-ink">Kontakt ma'lumotlari</span>
+                <button onClick={() => setShowInfo(false)} className="text-ink-disabled hover:text-ink">
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {loadingInfo ? (
+                <div className="flex items-center justify-center py-12"><Loader2 className="w-5 h-5 animate-spin text-primary-400" /></div>
+              ) : contactInfo ? (
+                <div className="p-4 space-y-4">
+                  {/* Avatar + name */}
+                  <div className="flex flex-col items-center gap-2 py-2">
+                    <div className="w-16 h-16 rounded-full bg-primary-100 flex items-center justify-center text-2xl font-bold text-primary-700">
+                      {initials(contactInfo.conv?.title)}
+                    </div>
+                    <p className="font-semibold text-ink text-center">{contactInfo.conv?.title || 'Anonim'}</p>
+                    {contactInfo.conv?.username && (
+                      <p className="text-xs text-ink-tertiary">@{contactInfo.conv.username}</p>
+                    )}
+                    <div className={`flex items-center gap-1 text-xs font-medium px-2.5 py-1 rounded-full ${CHANNEL_COLOR[contactInfo.conv?.channel] || ''}`}>
+                      {(() => { const I = CHANNEL_ICON[contactInfo.conv?.channel]; return I ? <I /> : null; })()}
+                      <span className="ml-1 capitalize">{contactInfo.conv?.channel}</span>
+                    </div>
+                  </div>
+
+                  {/* Info rows */}
+                  <div className="space-y-0">
+                    <div className="flex items-center gap-2.5 py-2.5 border-b border-surface-100">
+                      <Hash className="w-4 h-4 text-ink-tertiary shrink-0" />
+                      <div>
+                        <p className="text-[10px] text-ink-disabled">Barcha suhbatlar</p>
+                        <p className="text-sm font-semibold text-ink">{contactInfo.convCount ?? 1} ta</p>
+                      </div>
+                    </div>
+
+                    {contactInfo.conv?.assignedTo?.name && (
+                      <div className="flex items-center gap-2.5 py-2.5 border-b border-surface-100">
+                        <User className="w-4 h-4 text-ink-tertiary shrink-0" />
+                        <div>
+                          <p className="text-[10px] text-ink-disabled">Mas'ul agent</p>
+                          <p className="text-sm font-medium text-ink">{contactInfo.conv.assignedTo.name}</p>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex items-center gap-2.5 py-2.5 border-b border-surface-100">
+                      <ChevronRight className="w-4 h-4 text-ink-tertiary shrink-0" />
+                      <div>
+                        <p className="text-[10px] text-ink-disabled">Status</p>
+                        <p className={`text-sm font-medium ${
+                          contactInfo.conv?.status === 'unanswered' ? 'text-orange-600' :
+                          contactInfo.conv?.status === 'accepted'   ? 'text-emerald-600' : 'text-ink-tertiary'
+                        }`}>
+                          {contactInfo.conv?.status === 'unanswered' ? 'Javob berilmagan' :
+                           contactInfo.conv?.status === 'accepted'   ? 'Qabul qilingan' : contactInfo.conv?.status}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Linked contact or create button */}
+                  {contactInfo.conv?.contact ? (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-3 space-y-2">
+                      <div className="flex items-center gap-2 mb-1">
+                        <User className="w-3.5 h-3.5 text-emerald-600" />
+                        <span className="text-xs font-semibold text-emerald-700">Bog'langan kontakt</span>
+                      </div>
+                      <p className="text-sm font-semibold text-ink">{contactInfo.conv.contact.name}</p>
+                      {contactInfo.conv.contact.phone && (
+                        <div className="flex items-center gap-1.5">
+                          <Phone className="w-3 h-3 text-ink-tertiary" />
+                          <span className="text-xs text-ink-secondary">{contactInfo.conv.contact.phone}</span>
+                        </div>
+                      )}
+                      {contactInfo.conv.contact.email && (
+                        <div className="flex items-center gap-1.5">
+                          <Mail className="w-3 h-3 text-ink-tertiary" />
+                          <span className="text-xs text-ink-secondary">{contactInfo.conv.contact.email}</span>
+                        </div>
+                      )}
+                    </div>
+                  ) : showContactForm ? (
+                    <div className="bg-surface-50 border border-surface-200 rounded-2xl p-3 space-y-2">
+                      <p className="text-xs font-semibold text-ink mb-1">Yangi kontakt yaratish</p>
+                      <input
+                        className="w-full border border-surface-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-primary-300"
+                        placeholder="Ism *"
+                        value={contactForm.name}
+                        onChange={e => setContactForm(f => ({ ...f, name: e.target.value }))}
+                      />
+                      <input
+                        className="w-full border border-surface-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-primary-300"
+                        placeholder="Telefon"
+                        value={contactForm.phone}
+                        onChange={e => setContactForm(f => ({ ...f, phone: e.target.value }))}
+                      />
+                      <input
+                        className="w-full border border-surface-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-primary-300"
+                        placeholder="Email"
+                        value={contactForm.email}
+                        onChange={e => setContactForm(f => ({ ...f, email: e.target.value }))}
+                      />
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          onClick={() => setShowContactForm(false)}
+                          className="flex-1 py-1.5 text-xs rounded-xl bg-surface-100 text-ink-secondary hover:bg-surface-200 transition-colors"
+                        >
+                          Bekor
+                        </button>
+                        <button
+                          onClick={handleCreateContact}
+                          disabled={!contactForm.name.trim() || savingContact}
+                          className="flex-1 py-1.5 text-xs rounded-xl bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-40 transition-colors flex items-center justify-center gap-1"
+                        >
+                          {savingContact ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                          Saqlash
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setShowContactForm(true)}
+                      className="w-full flex items-center justify-center gap-2 py-2.5 rounded-2xl border-2 border-dashed border-surface-300 text-xs text-ink-tertiary hover:border-primary-400 hover:text-primary-600 transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Kontakt yaratish
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="py-10 text-center text-xs text-ink-tertiary">Ma'lumot topilmadi</div>
+              )}
+            </div>
+          )}
 
           {/* ── Sticker panel (right side) ── */}
           {showStickers && (

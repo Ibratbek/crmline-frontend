@@ -968,6 +968,8 @@ export default {
       trash: "Корзина",
       funnels: "Воронкалар",
       tasks: "Вазифалар",
+      integrations: "Интеграциялар",
+      inbox: "Inbox",
       audit: "Аудит журнали",
     },
     branding: {
