@@ -1,98 +1,170 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useSelector } from 'react-redux';
 import axios from 'axios';
-import { useT } from '../utils/translate';
-import {
-  Phone, PhoneMissed, Users, GitPullRequestDraft, MessageSquare,
-  Clock, AlertTriangle, Loader2, RefreshCw, PhoneIncoming,
-  PhoneOutgoing, CheckCircle2, TrendingUp, BarChart2,
-} from 'lucide-react';
+import { AlertCircle, CheckCircle2, ListTodo, UserX, Loader2, AlertTriangle, RefreshCw } from 'lucide-react';
 
 const API = process.env.REACT_APP_API_URL || 'http://localhost:5002/api';
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-function fmtTime(d) {
-  if (!d) return '—';
-  const dt = new Date(d);
-  const now = new Date();
-  const diffMs = now - dt;
-  const diffMin = Math.floor(diffMs / 60000);
-  if (diffMin < 1)  return 'Hozirgina';
-  if (diffMin < 60) return `${diffMin} daq oldin`;
-  const diffH = Math.floor(diffMin / 60);
-  if (diffH < 24)   return `${diffH} soat oldin`;
-  const diffD = Math.floor(diffH / 24);
-  return `${diffD} kun oldin`;
+
+function fmtSum(v) {
+  if (!v) return '0';
+  if (v >= 1_000_000_000) return `${(v / 1_000_000_000).toFixed(1)} mlrd`;
+  if (v >= 1_000_000)     return `${(v / 1_000_000).toFixed(1)} mln`;
+  if (v >= 1_000)         return `${(v / 1_000).toFixed(0)} ming`;
+  return String(v);
 }
 
-function fmtDate(d) {
-  if (!d) return '—';
-  const dt = new Date(d);
-  return `${String(dt.getDate()).padStart(2,'0')}.${String(dt.getMonth()+1).padStart(2,'0')}.${dt.getFullYear()}`;
+// ── SVG Gauge (tachometer) ────────────────────────────────────────────────────
+function Gauge({ value, max, label, size = 200 }) {
+  const pct = max > 0 ? Math.min(value / max, 1) : 0;
+  const sw = 14;
+  const pad = sw / 2 + 4;
+  const W = size;
+  const H = Math.round(size * 0.58);
+  const cx = W / 2;
+  const r = W / 2 - pad;
+  const cy = H;
+
+  // standard math coords: 0°=right, 90°=top, 180°=left
+  // SVG: x = cx + r*cos(deg°), y = cy - r*sin(deg°)
+  const pt = (deg) => ({
+    x: +(cx + r * Math.cos(deg * Math.PI / 180)).toFixed(2),
+    y: +(cy - r * Math.sin(deg * Math.PI / 180)).toFixed(2),
+  });
+
+  const left  = pt(180); // 0% position
+  const right = pt(0);   // 100% position
+  const progDeg = 180 - pct * 180;
+  const prog  = pt(progDeg);
+
+  // sweep=0 (counterclockwise on screen) from left → top → right
+  const bgPath = `M${left.x} ${left.y} A${r} ${r} 0 0 0 ${right.x} ${right.y}`;
+  const fgPath = pct > 0.005
+    ? `M${left.x} ${left.y} A${r} ${r} 0 ${pct > 0.5 ? 1 : 0} 0 ${prog.x} ${prog.y}`
+    : null;
+
+  const arcColor = pct < 0.5 ? '#ef4444' : pct < 0.8 ? '#f59e0b' : '#22c55e';
+
+  // Needle
+  const nl = r - sw - 6;
+  const np = {
+    x: +(cx + nl * Math.cos(progDeg * Math.PI / 180)).toFixed(2),
+    y: +(cy - nl * Math.sin(progDeg * Math.PI / 180)).toFixed(2),
+  };
+
+  return (
+    <svg width={W} height={H + 4} viewBox={`0 0 ${W} ${H + 4}`}>
+      <path d={bgPath} fill="none" stroke="#f1f5f9" strokeWidth={sw} strokeLinecap="round" />
+      {fgPath && <path d={fgPath} fill="none" stroke={arcColor} strokeWidth={sw} strokeLinecap="round" />}
+      <line x1={cx} y1={cy} x2={np.x} y2={np.y} stroke="#1e293b" strokeWidth={2.5} strokeLinecap="round" />
+      <circle cx={cx} cy={cy} r={5} fill="#1e293b" />
+      <text x={cx} y={cy - r * 0.45} textAnchor="middle" fontSize={size * 0.11} fontWeight="800" fill="#1e293b">
+        {Math.round(pct * 100)}%
+      </text>
+      <text x={cx} y={cy - r * 0.22} textAnchor="middle" fontSize={size * 0.055} fill="#64748b">
+        {label}
+      </text>
+    </svg>
+  );
 }
 
-function fmtPhone(p) {
-  if (!p) return '—';
-  const s = String(p);
-  if (s.length === 12) return `+${s.slice(0,3)} (${s.slice(3,5)}) ${s.slice(5,8)}-${s.slice(8,10)}-${s.slice(10)}`;
-  return `+${s}`;
+// ── SVG Pie Chart ─────────────────────────────────────────────────────────────
+function PieChart({ data, size = 160 }) {
+  // data items already have .label and .color from backend
+  const [hovered, setHovered] = useState(null);
+  const cx = size / 2, cy = size / 2, r = size / 2 - 8;
+  const total = data.reduce((a, d) => a + d.count, 0);
+  if (total === 0) return null;
+
+  let angle = -Math.PI / 2; // start from top
+  const slices = data.map((d, i) => {
+    const pct   = d.count / total;
+    const start = angle;
+    const sweep = pct * 2 * Math.PI;
+    angle += sweep;
+    const end = angle;
+
+    const x1 = cx + r * Math.cos(start);
+    const y1 = cy + r * Math.sin(start);
+    const x2 = cx + r * Math.cos(end);
+    const y2 = cy + r * Math.sin(end);
+    const large = sweep > Math.PI ? 1 : 0;
+    const path  = `M ${cx} ${cy} L ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2} Z`;
+
+    const midAngle = start + sweep / 2;
+    return { ...d, path, midAngle, pct };
+  });
+
+  const hov = hovered !== null ? slices[hovered] : null;
+
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="shrink-0">
+      {slices.map((s, i) => {
+        const scale = hovered === i ? 1.04 : 1;
+        return (
+          <path
+            key={i}
+            d={s.path}
+            fill={s.color}
+            stroke="white"
+            strokeWidth={2}
+            opacity={hovered !== null && hovered !== i ? 0.55 : 1}
+            style={{ transform: `scale(${scale})`, transformOrigin: `${cx}px ${cy}px`, transition: 'all 0.15s' }}
+            onMouseEnter={() => setHovered(i)}
+            onMouseLeave={() => setHovered(null)}
+            className="cursor-pointer"
+          />
+        );
+      })}
+      {/* Center donut hole */}
+      <circle cx={cx} cy={cy} r={r * 0.48} fill="white" />
+      {/* Center text */}
+      {hov ? (
+        <>
+          <text x={cx} y={cy - 7} textAnchor="middle" fontSize="15" fontWeight="700" fill="#1e293b">
+            {Math.round(hov.pct * 100)}%
+          </text>
+          <text x={cx} y={cy + 10} textAnchor="middle" fontSize="10" fill="#64748b">
+            {hov.label}
+          </text>
+        </>
+      ) : (
+        <>
+          <text x={cx} y={cy - 5} textAnchor="middle" fontSize="11" fontWeight="600" fill="#64748b">
+            Jami
+          </text>
+          <text x={cx} y={cy + 12} textAnchor="middle" fontSize="18" fontWeight="800" fill="#1e293b">
+            {total}
+          </text>
+        </>
+      )}
+    </svg>
+  );
 }
 
-function fmtAmount(v) {
-  if (!v) return '';
-  return new Intl.NumberFormat('uz-UZ').format(v);
-}
-
-const CHANNEL_LABEL = {
-  telegram:  'Telegram',
-  whatsapp:  'WhatsApp',
-  instagram: 'Instagram',
-  facebook:  'Facebook',
-};
-
-// ── Sub-components ────────────────────────────────────────────────────────────
-function KpiCard({ icon: Icon, label, value, color, sub, onClick }) {
+// ── Stat Card ─────────────────────────────────────────────────────────────────
+function StatCard({ icon: Icon, iconBg, iconColor, label, value, sub, onClick }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`card card-body flex items-start gap-3 text-left w-full transition-shadow hover:shadow-md ${onClick ? 'cursor-pointer' : 'cursor-default'}`}
+      className={`group bg-white rounded-2xl border border-surface-200 p-6 flex flex-col gap-4 text-left w-full transition-all hover:shadow-lg hover:-translate-y-0.5 ${onClick ? 'cursor-pointer' : 'cursor-default'}`}
     >
-      <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${color}`}>
-        <Icon className="w-5 h-5" />
+      <div className={`w-11 h-11 rounded-xl flex items-center justify-center ${iconBg}`}>
+        <Icon className={`w-5 h-5 ${iconColor}`} />
       </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-2xl font-bold text-ink leading-none">{value ?? '—'}</p>
-        <p className="text-xs text-ink-secondary mt-1">{label}</p>
-        {sub && <p className="text-[11px] text-ink-disabled mt-0.5">{sub}</p>}
+      <div>
+        <p className="text-[13px] font-medium text-ink-secondary leading-none mb-2">{label}</p>
+        <p className="text-4xl font-bold text-ink leading-none tracking-tight">{value ?? '—'}</p>
+        {sub && <p className="text-[12px] text-ink-tertiary mt-2 leading-snug">{sub}</p>}
       </div>
     </button>
   );
 }
 
-function SectionHeader({ icon: Icon, title, count }) {
-  return (
-    <div className="flex items-center gap-2 mb-3">
-      <Icon className="w-4 h-4 text-ink-tertiary shrink-0" />
-      <span className="text-sm font-semibold text-ink">{title}</span>
-      {count != null && (
-        <span className="ml-1 text-[11px] bg-surface-100 text-ink-tertiary px-2 py-0.5 rounded-full">{count}</span>
-      )}
-    </div>
-  );
-}
-
-function EmptyRow({ text }) {
-  return <p className="text-sm text-ink-tertiary text-center py-4">{text}</p>;
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function DashboardHome() {
   const navigate = useNavigate();
-  const { user } = useSelector(s => s.auth);
-  const t = useT();
-
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState(false);
@@ -112,10 +184,6 @@ export default function DashboardHome() {
 
   useEffect(() => { load(); }, [load]);
 
-  const today = new Date();
-  const todayStr = today.toLocaleDateString('uz-UZ', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-
-  // ── Loading / Error ──────────────────────────────────────────────────────
   if (loading) {
     return (
       <div className="flex items-center justify-center h-full">
@@ -128,282 +196,217 @@ export default function DashboardHome() {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-3 text-ink-tertiary">
         <AlertTriangle className="w-8 h-8" />
-        <p className="text-sm">{t('crmDashboard.loadError')}</p>
+        <p className="text-sm">Ma'lumot yuklanmadi</p>
         <button onClick={load} className="btn-primary btn-sm flex items-center gap-1.5">
-          <RefreshCw className="w-3.5 h-3.5" /> {t('crmDashboard.reload')}
+          <RefreshCw className="w-3.5 h-3.5" /> Qayta urinish
         </button>
       </div>
     );
   }
 
-  const { kpi, missedCalls, overdueTasks, funnelStats, activity } = data;
+  const { cards, dealSources = [], dealsByManager = [], managerTotal = { count: 0, sum: 0 }, goalsProgress = null } = data;
+  const totalDeals = dealSources.reduce((a, d) => a + d.count, 0);
 
-  // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-full overflow-y-auto bg-surface-50">
-      {/* Header */}
-      <div className="shrink-0 bg-white border-b border-surface-200 px-6 py-4 flex items-center justify-between gap-3">
-        <div>
-          <h1 className="text-base font-bold text-ink leading-none">
-            {t('crmDashboard.greeting').replace('{name}', user?.name?.split(' ')[0] || '')}
-          </h1>
-          <p className="text-xs text-ink-tertiary mt-0.5 capitalize">{todayStr}</p>
-        </div>
-        <button
-          onClick={load}
-          className="p-2 rounded-lg text-ink-tertiary hover:bg-surface-100 hover:text-ink transition-colors"
-          title="Yangilash"
-        >
-          <RefreshCw className="w-4 h-4" />
-        </button>
-      </div>
+    <div className="h-full bg-surface-50 overflow-y-auto">
+      <div className="p-6 lg:p-8 space-y-6 max-w-6xl mx-auto">
 
-      <div className="flex-1 p-4 lg:p-6 space-y-5 max-w-6xl mx-auto w-full">
-
-        {/* ── KPI Cards ─────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <KpiCard
-            icon={Phone}
-            label={t('crmDashboard.kpiCalls')}
-            value={kpi.todayCalls}
-            color="bg-blue-50 text-blue-600"
-            sub={t('crmDashboard.kpiSubToday')}
-            onClick={() => navigate('/calls')}
+        {/* 4 stat cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard
+            icon={AlertCircle}
+            iconBg="bg-red-50"
+            iconColor="text-red-500"
+            label="Muddati o'tgan"
+            value={cards.overdueCount}
+            sub={cards.overdueCount > 0 ? "Darhol e'tibor kerak" : 'Hammasi vaqtida'}
+            onClick={() => navigate('/tasks')}
           />
-          <KpiCard
-            icon={Users}
-            label={t('crmDashboard.kpiContacts')}
-            value={kpi.todayContacts}
-            color="bg-emerald-50 text-emerald-600"
-            sub={t('crmDashboard.kpiSubTodayAdded')}
-            onClick={() => navigate('/contacts')}
+          <StatCard
+            icon={CheckCircle2}
+            iconBg="bg-emerald-50"
+            iconColor="text-emerald-500"
+            label="Bajarilgan"
+            value={cards.completedCount}
+            sub="Oxirgi bosqichdagi"
+            onClick={() => navigate('/tasks')}
           />
-          <KpiCard
-            icon={GitPullRequestDraft}
-            label={t('crmDashboard.kpiDeals')}
-            value={kpi.openDeals}
-            color="bg-violet-50 text-violet-600"
-            sub={t('crmDashboard.kpiSubTotal')}
+          <StatCard
+            icon={ListTodo}
+            iconBg="bg-blue-50"
+            iconColor="text-blue-500"
+            label="Faol vazifalar"
+            value={cards.activeCount}
+            sub="Bajarilishi kerak"
+            onClick={() => navigate('/tasks')}
           />
-          <KpiCard
-            icon={MessageSquare}
-            label={t('crmDashboard.kpiUnanswered')}
-            value={kpi.unansweredConvs}
-            color={kpi.unansweredConvs > 0 ? 'bg-amber-50 text-amber-600' : 'bg-surface-100 text-ink-tertiary'}
-            sub={t('crmDashboard.kpiSubUnanswered')}
-            onClick={() => navigate('/inbox')}
+          <StatCard
+            icon={UserX}
+            iconBg="bg-amber-50"
+            iconColor="text-amber-500"
+            label="Biriktirilmagan"
+            value={cards.unassignedCount}
+            sub={cards.unassignedSum > 0 ? `${fmtSum(cards.unassignedSum)} UZS` : 'Belgilanmagan lidlar'}
           />
         </div>
 
-        {/* ── Main grid ─────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-
-          {/* LEFT column: missed calls + overdue tasks */}
-          <div className="lg:col-span-2 space-y-5">
-
-            {/* Missed calls */}
-            <div className="card card-body">
-              <SectionHeader icon={PhoneMissed} title={t('crmDashboard.missedTitle')} count={missedCalls.length} />
-              {missedCalls.length === 0 ? (
-                <EmptyRow text={t('crmDashboard.missedEmpty')} />
-              ) : (
-                <div className="divide-y divide-surface-100">
-                  {missedCalls.map(call => (
-                    <div key={call._id} className="flex items-center gap-3 py-2.5">
-                      <div className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center shrink-0">
-                        <PhoneMissed className="w-4 h-4 text-red-400" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        {call.contact ? (
-                          <button
-                            onClick={() => navigate(`/contacts/${call.contact._id}`)}
-                            className="text-sm font-medium text-ink hover:text-primary-600 transition-colors truncate block"
-                          >
-                            {call.contact.name}
-                          </button>
-                        ) : (
-                          <span className="text-sm font-medium text-ink truncate block">
-                            {fmtPhone(call.phone)}
-                          </span>
-                        )}
-                        {call.contact && (
-                          <span className="text-[11px] text-ink-tertiary font-mono">{fmtPhone(call.phone)}</span>
-                        )}
-                      </div>
-                      <span className="text-[11px] text-ink-disabled whitespace-nowrap shrink-0">
-                        {fmtTime(call.createdAt)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <button
-                onClick={() => navigate('/calls')}
-                className="mt-3 w-full text-center text-xs text-primary-600 hover:text-primary-700 font-medium py-1.5 rounded-lg hover:bg-primary-50 transition-colors"
-              >
-                {t('crmDashboard.allCalls')}
-              </button>
+        {/* Maqsadlar (Goals) */}
+        {goalsProgress && (goalsProgress.totalSumTarget > 0 || goalsProgress.totalCountTarget > 0) && (
+          <div className="bg-white rounded-2xl border border-surface-200 overflow-hidden">
+            <div className="px-6 py-4 border-b border-surface-100">
+              <h2 className="text-sm font-semibold text-ink">Maqsadlar</h2>
             </div>
-
-            {/* Overdue tasks */}
-            {overdueTasks.length > 0 && (
-              <div className="card card-body border-l-4 border-l-amber-400">
-                <SectionHeader icon={AlertTriangle} title={t('crmDashboard.overdueTitle')} count={overdueTasks.length} />
-                <div className="divide-y divide-surface-100">
-                  {overdueTasks.map(task => (
-                    <div key={task._id} className="flex items-start gap-3 py-2.5">
-                      <div className="w-7 h-7 rounded-lg bg-amber-50 flex items-center justify-center shrink-0 mt-0.5">
-                        <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-ink truncate">{task.title}</p>
-                        <p className="text-[11px] text-red-500 mt-0.5">
-                          {t('crmDashboard.dueDate')} {fmtDate(task.dueDate)}
-                          {task.assignedTo && <span className="text-ink-tertiary ml-2">· {task.assignedTo.name}</span>}
-                        </p>
-                      </div>
+            <div className="p-6">
+              {/* Two gauges */}
+              <div className="flex items-end justify-center gap-8 flex-wrap">
+                {goalsProgress.totalSumTarget > 0 && (
+                  <div className="flex flex-col items-center gap-2">
+                    <Gauge
+                      value={goalsProgress.currentSum}
+                      max={goalsProgress.totalSumTarget}
+                      label="Summa"
+                      size={200}
+                    />
+                    <div className="text-center">
+                      <p className="text-base font-bold text-ink">{fmtSum(goalsProgress.currentSum)} <span className="text-xs text-ink-tertiary font-normal">/ {fmtSum(goalsProgress.totalSumTarget)} UZS</span></p>
                     </div>
-                  ))}
-                </div>
-                <button
-                  onClick={() => navigate('/tasks')}
-                  className="mt-3 w-full text-center text-xs text-amber-600 hover:text-amber-700 font-medium py-1.5 rounded-lg hover:bg-amber-50 transition-colors"
-                >
-                  {t('crmDashboard.allTasks')}
-                </button>
+                  </div>
+                )}
+                {goalsProgress.totalCountTarget > 0 && (
+                  <div className="flex flex-col items-center gap-2">
+                    <Gauge
+                      value={goalsProgress.currentCount}
+                      max={goalsProgress.totalCountTarget}
+                      label="Soudalar soni"
+                      size={200}
+                    />
+                    <div className="text-center">
+                      <p className="text-base font-bold text-ink">{goalsProgress.currentCount} <span className="text-xs text-ink-tertiary font-normal">/ {goalsProgress.totalCountTarget} ta</span></p>
+                    </div>
+                  </div>
+                )}
               </div>
-            )}
 
-            {/* Activity feed */}
-            <div className="card card-body">
-              <SectionHeader icon={Clock} title={t('crmDashboard.activityTitle')} />
-              {activity.length === 0 ? (
-                <EmptyRow text={t('crmDashboard.activityEmpty')} />
-              ) : (
-                <div className="divide-y divide-surface-100">
-                  {activity.map(item => (
-                    <div key={`${item.type}-${item._id}`} className="flex items-center gap-3 py-2.5">
-                      {/* Icon */}
-                      <div className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center">
-                        {item.type === 'call' ? (
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                            item.status === 'missed' ? 'bg-red-50' : item.status === 'completed' ? 'bg-emerald-50' : 'bg-blue-50'
-                          }`}>
-                            {item.status === 'missed'
-                              ? <PhoneMissed className="w-3.5 h-3.5 text-red-400" />
-                              : item.sub === 'Kiruvchi'
-                                ? <PhoneIncoming className="w-3.5 h-3.5 text-emerald-400" />
-                                : <PhoneOutgoing className="w-3.5 h-3.5 text-blue-400" />
-                            }
-                          </div>
-                        ) : (
-                          <div className="w-8 h-8 rounded-full bg-violet-50 flex items-center justify-center">
-                            <MessageSquare className="w-3.5 h-3.5 text-violet-400" />
-                          </div>
-                        )}
-                      </div>
-                      {/* Content */}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-ink truncate">{item.title}</p>
-                        <p className="text-[11px] text-ink-tertiary truncate">
-                          {item.type === 'call'
-                            ? item.sub
-                            : `${CHANNEL_LABEL[item.channel] || item.channel} · ${item.sub}`
-                          }
-                        </p>
-                      </div>
-                      <span className="text-[11px] text-ink-disabled whitespace-nowrap shrink-0">
-                        {fmtTime(item.createdAt)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* RIGHT column: funnel stats */}
-          <div className="space-y-4">
-            <div className="card card-body">
-              <SectionHeader icon={BarChart2} title={t('crmDashboard.funnelTitle')} />
-              {funnelStats.length === 0 ? (
-                <EmptyRow text={t('crmDashboard.funnelEmpty')} />
-              ) : (
-                <div className="space-y-5">
-                  {funnelStats.map(funnel => (
-                    <div key={funnel._id}>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-semibold text-ink truncate flex-1 mr-2">{funnel.name}</span>
-                        <span className="text-xs text-ink-tertiary shrink-0">{funnel.total} ta</span>
-                      </div>
-                      {funnel.stages.filter(s => s.count > 0).length === 0 ? (
-                        <p className="text-[11px] text-ink-disabled">{t('crmDashboard.noDeal')}</p>
-                      ) : (
-                        <div className="space-y-1.5">
-                          {funnel.stages.map((stage, i) => (
-                            <div key={i} className="flex items-center gap-2">
-                              <div
-                                className="w-2 h-2 rounded-full shrink-0"
-                                style={{ backgroundColor: stage.color || '#94a3b8' }}
-                              />
-                              <div className="flex-1 min-w-0">
-                                <div className="flex items-center justify-between gap-1">
-                                  <span className="text-[11px] text-ink-secondary truncate">{stage.name}</span>
-                                  <span className="text-[11px] font-semibold text-ink shrink-0">{stage.count}</span>
-                                </div>
-                                {funnel.total > 0 && (
-                                  <div className="h-1 bg-surface-100 rounded-full mt-0.5 overflow-hidden">
-                                    <div
-                                      className="h-full rounded-full transition-all"
-                                      style={{
-                                        width: `${Math.round((stage.count / funnel.total) * 100)}%`,
-                                        backgroundColor: stage.color || '#94a3b8',
-                                      }}
-                                    />
-                                  </div>
-                                )}
-                              </div>
+              {/* Per-user progress */}
+              {goalsProgress.byUser?.some(u => u.targetSum > 0 || u.targetCount > 0) && (
+                <div className="mt-6 pt-5 border-t border-surface-100 space-y-4">
+                  <p className="text-xs font-semibold text-ink-secondary uppercase tracking-wide">Xodimlar bo'yicha</p>
+                  {goalsProgress.byUser.filter(u => u.targetSum > 0 || u.targetCount > 0).map((u, i) => {
+                    const sumPct   = u.targetSum   > 0 ? Math.min(u.currentSum   / u.targetSum,   1) : 0;
+                    const countPct = u.targetCount > 0 ? Math.min(u.currentCount / u.targetCount, 1) : 0;
+                    return (
+                      <div key={i} className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-7 h-7 rounded-full bg-primary-100 flex items-center justify-center shrink-0">
+                              <span className="text-xs font-bold text-primary-600">{u.name.charAt(0).toUpperCase()}</span>
                             </div>
-                          ))}
+                            <span className="text-sm font-medium text-ink">{u.name}</span>
+                          </div>
                         </div>
-                      )}
-                      {funnel.value > 0 && (
-                        <div className="flex items-center gap-1.5 mt-2.5 pt-2 border-t border-surface-100">
-                          <TrendingUp className="w-3 h-3 text-emerald-400 shrink-0" />
-                          <span className="text-[11px] text-emerald-600 font-semibold">
-                            {fmtAmount(funnel.value)} UZS
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  ))}
+                        {u.targetSum > 0 && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] text-ink-tertiary w-12 shrink-0">Summa</span>
+                            <div className="flex-1 h-1.5 bg-surface-100 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full transition-all"
+                                style={{ width: `${sumPct * 100}%`, backgroundColor: sumPct < 0.5 ? '#ef4444' : sumPct < 0.8 ? '#f59e0b' : '#22c55e' }} />
+                            </div>
+                            <span className="text-[11px] text-ink-secondary shrink-0 w-24 text-right">
+                              {fmtSum(u.currentSum)} / {fmtSum(u.targetSum)}
+                            </span>
+                          </div>
+                        )}
+                        {u.targetCount > 0 && (
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] text-ink-tertiary w-12 shrink-0">Soni</span>
+                            <div className="flex-1 h-1.5 bg-surface-100 rounded-full overflow-hidden">
+                              <div className="h-full rounded-full transition-all"
+                                style={{ width: `${countPct * 100}%`, backgroundColor: countPct < 0.5 ? '#ef4444' : countPct < 0.8 ? '#f59e0b' : '#22c55e' }} />
+                            </div>
+                            <span className="text-[11px] text-ink-secondary shrink-0 w-24 text-right">
+                              {u.currentCount} / {u.targetCount} ta
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               )}
             </div>
+          </div>
+        )}
 
-            {/* Quick links */}
-            <div className="card card-body">
-              <p className="text-xs font-semibold text-ink-secondary mb-3">{t('crmDashboard.quickLinks')}</p>
-              <div className="space-y-1">
-                {[
-                  { label: t('crmDashboard.addContact'),  path: '/contacts/new',  icon: Users },
-                  { label: t('crmDashboard.callHistory'), path: '/calls',         icon: Phone },
-                  { label: 'Inbox',                       path: '/inbox',         icon: MessageSquare },
-                  { label: t('bottomNav.tasks'),          path: '/tasks',         icon: CheckCircle2  },
-                ].map(({ label, path, icon: Icon }) => (
-                  <button
-                    key={path}
-                    onClick={() => navigate(path)}
-                    className="flex items-center gap-2.5 w-full px-3 py-2 rounded-lg text-sm text-ink-secondary hover:bg-surface-50 hover:text-ink transition-colors text-left"
-                  >
-                    <Icon className="w-3.5 h-3.5 text-ink-tertiary shrink-0" />
-                    {label}
-                  </button>
-                ))}
+        {/* Bottom row: managers + pie chart side by side */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+          {/* Menejerlar bo'yicha soudalar */}
+          {dealsByManager.length > 0 && (
+            <div className="bg-white rounded-2xl border border-surface-200 overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-5 py-4 border-b border-surface-100">
+                <h2 className="text-sm font-semibold text-ink">Menejerlar bo'yicha</h2>
+                <div className="flex items-center gap-3">
+                  <div className="text-right">
+                    <p className="text-[10px] text-ink-tertiary leading-none mb-0.5">Soudalar</p>
+                    <p className="text-sm font-bold text-ink">{managerTotal.count} ta</p>
+                  </div>
+                  <div className="w-px h-7 bg-surface-200" />
+                  <div className="text-right">
+                    <p className="text-[10px] text-ink-tertiary leading-none mb-0.5">Summa</p>
+                    <p className="text-sm font-bold text-primary-600">{fmtSum(managerTotal.sum)} UZS</p>
+                  </div>
+                </div>
+              </div>
+              <div className="divide-y divide-surface-100 flex-1">
+                {dealsByManager.map((m, i) => {
+                  const pct = managerTotal.count > 0 ? (m.count / managerTotal.count) * 100 : 0;
+                  return (
+                    <div key={i} className="flex items-center gap-3 px-5 py-3">
+                      <div className="w-8 h-8 rounded-full bg-primary-100 flex items-center justify-center shrink-0">
+                        <span className="text-xs font-bold text-primary-600">{m.name.charAt(0).toUpperCase()}</span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-sm font-medium text-ink truncate">{m.name}</span>
+                          <span className="text-xs text-ink-tertiary shrink-0 ml-2">{m.count} ta</span>
+                        </div>
+                        <div className="h-1.5 bg-surface-100 rounded-full overflow-hidden">
+                          <div className="h-full bg-primary-500 rounded-full transition-all" style={{ width: `${pct}%` }} />
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0 w-20">
+                        <p className="text-sm font-semibold text-ink">{fmtSum(m.sum)}</p>
+                        <p className="text-[10px] text-ink-tertiary">UZS</p>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
-          </div>
+          )}
+
+          {/* Pie chart — deal sources */}
+          {dealSources.length > 0 && (
+            <div className="bg-white rounded-2xl border border-surface-200 p-5 flex flex-col">
+              <h2 className="text-sm font-semibold text-ink mb-5">Soudalar manbai</h2>
+              <div className="flex-1 flex items-center justify-center gap-6 flex-wrap">
+                <PieChart data={dealSources} size={160} />
+                <div className="flex flex-col gap-2.5">
+                  {dealSources.map((d, i) => (
+                    <div key={i} className="flex items-center gap-2.5">
+                      <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: d.color || '#94a3b8' }} />
+                      <span className="text-sm text-ink-secondary min-w-[70px]">{d.label || d.source || 'Boshqa'}</span>
+                      <span className="text-sm font-semibold text-ink">{d.pct}%</span>
+                      <span className="text-xs text-ink-tertiary">({d.count} ta)</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
+
       </div>
     </div>
   );

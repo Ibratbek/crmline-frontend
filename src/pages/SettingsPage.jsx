@@ -17,7 +17,7 @@ import {
   Phone, Lock, ChevronDown, Loader2, Search,
   Pencil, Trash2, KeyRound, ShieldCheck, SlidersHorizontal, History,
   Palette, Upload, Check, Building2, Building, RotateCcw, AlertTriangle, Eye, EyeOff,
-  GripVertical, Archive, Kanban, ChevronUp, GripHorizontal, MessageSquare, Mail, Bell, BellOff,
+  GripVertical, Archive, Kanban, Layers, Target, ChevronUp, GripHorizontal, MessageSquare, Mail, Bell, BellOff,
 } from 'lucide-react';
 import { subscribeToPush, unsubscribeFromPush } from '../utils/swRegister';
 import { addFunnel, updateFunnel as updateFunnelStore, removeFunnel, fetchFunnels } from '../store/funnelSlice';
@@ -30,6 +30,8 @@ const TABS = [
   { key: 'branding',    icon: Palette,          label: 'Brending'         },
   { key: 'funnels',     icon: Kanban,           label: 'Varonkalar'       },
   { key: 'tasks',       icon: SlidersHorizontal,label: 'Vazifalar'        },
+  { key: 'deal-sources',icon: Layers,           label: 'Souda manbalari' },
+  { key: 'goals',       icon: Target,           label: 'Maqsadlar'       },
   { key: 'integrations',icon: Archive,          label: 'Integratsiyalar'  },
   { key: 'inbox',       icon: MessageSquare,    label: 'Inbox'            },
   { key: 'atc',         icon: Phone,            label: 'Telefoniya (ATC)' },
@@ -621,6 +623,197 @@ function TasksTab() {
           <Plus className="w-4 h-4" /> Bosqich qo'shish
         </button>
       </div>
+
+      <div className="flex justify-end">
+        <button onClick={save} disabled={saving} className="btn-primary btn-md flex items-center gap-2">
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+          Saqlash
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ─── DealSourcesTab ─────────────────────────────────────── */
+function DealSourcesTab() {
+  const [sources,  setSources]  = useState([]);
+  const [loading,  setLoading]  = useState(true);
+  const [saving,   setSaving]   = useState(false);
+
+  useEffect(() => {
+    axios.get(`${API_URL}/organization/deal-sources`)
+      .then(r => setSources(r.data.sources || []))
+      .catch(() => toast.error('Yuklanishda xato'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const genId   = () => Math.random().toString(36).slice(2, 10);
+  const addSrc  = () => setSources(prev => [...prev, { _id: genId(), name: '', color: STAGE_COLORS[prev.length % STAGE_COLORS.length] }]);
+  const removeSrc = (i) => setSources(prev => prev.filter((_, idx) => idx !== i));
+  const updateSrc = (i, field, val) => setSources(prev => prev.map((s, idx) => idx === i ? { ...s, [field]: val } : s));
+
+  const save = async () => {
+    const valid = sources.filter(s => s.name.trim()).map(s => ({ ...s, _id: s._id || genId() }));
+    setSaving(true);
+    try {
+      await axios.put(`${API_URL}/organization/deal-sources`, { sources: valid });
+      setSources(valid);
+      toast.success('Saqlandi');
+    } catch {
+      toast.error('Xato');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="py-10 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-primary-400" /></div>;
+
+  return (
+    <div className="space-y-5 max-w-lg">
+      <div>
+        <h3 className="font-semibold text-ink">Soudalar manbalari</h3>
+        <p className="text-sm text-ink-tertiary mt-0.5">Souda qo'shishda tanlash mumkin bo'lgan manbalar</p>
+      </div>
+
+      <div className="space-y-2">
+        {sources.map((s, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <input
+              type="color"
+              value={s.color || '#94a3b8'}
+              onChange={e => updateSrc(i, 'color', e.target.value)}
+              className="w-8 h-8 rounded-lg border border-surface-200 cursor-pointer bg-white p-0.5 shrink-0"
+            />
+            <input
+              className="input flex-1 text-sm"
+              placeholder={`Manba ${i + 1}`}
+              value={s.name}
+              onChange={e => updateSrc(i, 'name', e.target.value)}
+            />
+            <button onClick={() => removeSrc(i)}
+              className="p-1.5 rounded-lg hover:bg-red-50 text-ink-disabled hover:text-red-500 transition-colors">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        ))}
+
+        <button onClick={addSrc}
+          className="w-full flex items-center justify-center gap-2 py-2.5 border-2 border-dashed border-surface-200 rounded-xl text-sm text-ink-tertiary hover:border-primary-300 hover:text-primary-600 transition-colors">
+          <Plus className="w-4 h-4" /> Manba qo'shish
+        </button>
+      </div>
+
+      <div className="flex justify-end">
+        <button onClick={save} disabled={saving} className="btn-primary btn-md flex items-center gap-2">
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />}
+          Saqlash
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ─── GoalsTab ───────────────────────────────────────────── */
+function GoalsTab() {
+  const [totalSum,   setTotalSum]   = useState('');
+  const [totalCount, setTotalCount] = useState('');
+  const [users,      setUsers]      = useState([]);
+  const [byUser,     setByUser]     = useState([]);
+  const [loading,    setLoading]    = useState(true);
+  const [saving,     setSaving]     = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      axios.get(`${API_URL}/organization/goals`),
+      axios.get(`${API_URL}/organization/users`),
+    ]).then(([goalsRes, usersRes]) => {
+      const g = goalsRes.data.goals || {};
+      setTotalSum(g.totalSum   ? String(g.totalSum)   : '');
+      setTotalCount(g.totalCount ? String(g.totalCount) : '');
+      const allUsers = usersRes.data.users || [];
+      setUsers(allUsers);
+      const savedByUser = g.byUser || [];
+      const savedMap = Object.fromEntries(savedByUser.map(u => [String(u.userId), u]));
+      setByUser(allUsers.map(u => ({
+        userId:      u._id,
+        name:        u.name,
+        targetSum:   savedMap[String(u._id)]?.targetSum   ? String(savedMap[String(u._id)].targetSum)   : '',
+        targetCount: savedMap[String(u._id)]?.targetCount ? String(savedMap[String(u._id)].targetCount) : '',
+      })));
+    }).catch(() => toast.error('Yuklanishda xato'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const updateUser = (i, field, val) =>
+    setByUser(prev => prev.map((u, idx) => idx === i ? { ...u, [field]: val } : u));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await axios.put(`${API_URL}/organization/goals`, {
+        totalSum:   Number(totalSum)   || 0,
+        totalCount: Number(totalCount) || 0,
+        byUser: byUser
+          .filter(u => u.targetSum || u.targetCount)
+          .map(u => ({
+            userId:      u.userId,
+            targetSum:   Number(u.targetSum)   || 0,
+            targetCount: Number(u.targetCount) || 0,
+          })),
+      });
+      toast.success('Saqlandi');
+    } catch {
+      toast.error('Xato');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) return <div className="py-10 text-center"><Loader2 className="w-6 h-6 animate-spin mx-auto text-primary-400" /></div>;
+
+  return (
+    <div className="space-y-6 max-w-xl">
+      <div>
+        <h3 className="font-semibold text-ink">Maqsadlar (Цели)</h3>
+        <p className="text-sm text-ink-tertiary mt-0.5">Jami va xodimlar bo'yicha souda maqsadlarini belgilang</p>
+      </div>
+
+      {/* Jami maqsad */}
+      <div className="card card-body space-y-3">
+        <p className="text-xs font-semibold text-ink-secondary uppercase tracking-wide">Jami maqsad</p>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-ink mb-1">Summa (UZS)</label>
+            <input className="input" type="number" min="0" placeholder="0"
+              value={totalSum} onChange={e => setTotalSum(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-ink mb-1">Soudalar soni</label>
+            <input className="input" type="number" min="0" placeholder="0"
+              value={totalCount} onChange={e => setTotalCount(e.target.value)} />
+          </div>
+        </div>
+      </div>
+
+      {/* Xodimlar bo'yicha */}
+      {byUser.length > 0 && (
+        <div className="card card-body space-y-3">
+          <p className="text-xs font-semibold text-ink-secondary uppercase tracking-wide">Xodimlar bo'yicha</p>
+          <div className="space-y-3">
+            {byUser.map((u, i) => (
+              <div key={u.userId} className="space-y-1.5">
+                <p className="text-sm font-medium text-ink">{u.name}</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <input className="input text-sm" type="number" min="0" placeholder="Summa maqsadi"
+                    value={u.targetSum} onChange={e => updateUser(i, 'targetSum', e.target.value)} />
+                  <input className="input text-sm" type="number" min="0" placeholder="Soni maqsadi"
+                    value={u.targetCount} onChange={e => updateUser(i, 'targetCount', e.target.value)} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex justify-end">
         <button onClick={save} disabled={saving} className="btn-primary btn-md flex items-center gap-2">
@@ -5150,6 +5343,8 @@ export default function SettingsPage() {
         {tab === 'branding'   && <BrandingTab />}
         {tab === 'funnels'    && <FunnelsTab />}
         {tab === 'tasks'         && <TasksTab />}
+        {tab === 'deal-sources'  && <DealSourcesTab />}
+        {tab === 'goals'         && <GoalsTab />}
         {tab === 'integrations'  && <IntegrationsTab />}
         {tab === 'inbox'         && <QuickReplyTab />}
         {tab === 'atc'           && <AtcTab />}

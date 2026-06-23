@@ -212,11 +212,20 @@ function DealModal({ stageId, stages, contacts, users, deal, isLead, currency, o
   const [title,      setTitle]      = useState(deal?.title || '');
   const [stage,      setStage]      = useState(stageId || deal?.stageId || stages[0]?._id || '');
   const [value,      setValue]      = useState(deal?.value ?? '');
+  const [source,     setSource]     = useState(deal?.source || '');
   const [notes,      setNotes]      = useState(deal?.notes || '');
   const [assignedTo, setAssignedTo] = useState(deal?.assignedTo?._id || deal?.assignedTo || '');
   const [contact,    setContact]    = useState(deal?.contact?._id || deal?.contact || '');
   const [saving,     setSaving]     = useState(false);
   const [cSearch,    setCSearch]    = useState('');
+  const [dealSources, setDealSources] = useState([]);
+
+  useEffect(() => {
+    const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5002/api';
+    axios.get(`${API_URL}/organization/deal-sources`)
+      .then(r => setDealSources(r.data.sources || []))
+      .catch(() => {});
+  }, []);
 
   const filteredC = contacts.filter(c =>
     !cSearch || c.name.toLowerCase().includes(cSearch.toLowerCase()) || c.phone?.includes(cSearch)
@@ -226,7 +235,7 @@ function DealModal({ stageId, stages, contacts, users, deal, isLead, currency, o
     if (!title.trim()) { toast.error(t('funnel.titleRequired')); return; }
     setSaving(true);
     try {
-      await onSave({ title: title.trim(), stageId: stage, value: Number(value) || 0, notes, assignedTo: assignedTo || null, contact: contact || null });
+      await onSave({ title: title.trim(), stageId: stage, value: Number(value) || 0, source: source || '', notes, assignedTo: assignedTo || null, contact: contact || null });
       onClose();
     } finally { setSaving(false); }
   };
@@ -263,6 +272,19 @@ function DealModal({ stageId, stages, contacts, users, deal, isLead, currency, o
             <label className="block text-xs font-medium text-ink mb-1">{t('deals.value')} ({currency})</label>
             <input className="input" type="number" min="0" placeholder="0" value={value} onChange={e => setValue(e.target.value)} />
           </div>
+          {/* Source */}
+          {dealSources.length > 0 && (
+            <div>
+              <label className="block text-xs font-medium text-ink mb-1">Manba</label>
+              <select className="input" value={source} onChange={e => setSource(e.target.value)}>
+                <option value="">— Tanlanmagan —</option>
+                {dealSources.map(s => (
+                  <option key={s._id} value={String(s._id)}>{s.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Contact */}
           <div>
             <label className="block text-xs font-medium text-ink mb-1">{t('funnel.contactOpt')}</label>
