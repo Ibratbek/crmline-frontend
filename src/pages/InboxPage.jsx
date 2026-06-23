@@ -4,6 +4,7 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { connectSocket, disconnectSocket, getSocket } from '../utils/socket';
+import { mediaUrl as resolveMediaUrl } from '../utils/media';
 import {
   Send, MessageSquare, Search, Loader2,
   CheckCheck, User, X, Smile, Trash2, Paperclip, FileText,
@@ -175,15 +176,19 @@ function StickerImage({ fileId }) {
 const mediaUrlCache = new Map();
 
 function MediaAttachment({ msg, isOut }) {
-  const { mediaType, mediaFileId, mediaFileName, mediaMimeType, mediaFileSize, mediaDuration } = msg;
-  const [info, setInfo] = useState(mediaUrlCache.get(mediaFileId) || null);
+  const { mediaType, mediaUrl: directUrl, mediaFileId, mediaFileName, mediaMimeType, mediaFileSize, mediaDuration } = msg;
+  // Instagram media to'g'ridan-to'g'ri URL bilan keladi (R2'da saqlangan);
+  // Telegram esa file_id orqali — uni alohida so'rov bilan olamiz.
+  const [info, setInfo] = useState(() =>
+    directUrl ? { url: resolveMediaUrl(directUrl), ext: '' } : (mediaUrlCache.get(mediaFileId) || null)
+  );
 
   useEffect(() => {
-    if (!mediaFileId || info) return;
+    if (directUrl || !mediaFileId || info) return;
     axios.get(`${API_URL}/inbox/media-file/${encodeURIComponent(mediaFileId)}`)
       .then(r => { const d = { url: r.data.url, ext: r.data.ext || '' }; mediaUrlCache.set(mediaFileId, d); setInfo(d); })
       .catch(() => {});
-  }, [mediaFileId, info]);
+  }, [mediaFileId, info, directUrl]);
 
   const textCls = isOut ? 'text-white/80' : 'text-ink-tertiary';
 
@@ -242,7 +247,7 @@ function Bubble({ msg, onContextMenu }) {
   const isOut     = msg.direction === 'out';
   const isNote    = msg.isNote;
   const isSticker = msg.mediaType === 'sticker';
-  const hasMedia  = msg.mediaFileId && ['photo','video','video_note','voice','audio','document'].includes(msg.mediaType);
+  const hasMedia  = (msg.mediaFileId || msg.mediaUrl) && ['photo','video','video_note','voice','audio','document'].includes(msg.mediaType);
 
   // Internal note — special style
   if (isNote) {
@@ -1170,17 +1175,19 @@ export default function InboxPage() {
               )}
 
               <div className="flex items-end gap-2">
-                {/* Sticker toggle */}
-                <button
-                  onClick={toggleStickers}
-                  disabled={orgPacks.length === 0}
-                  title={orgPacks.length === 0 ? 'Sozlamalarda sticker pack qo\'shing' : 'Sticker'}
-                  className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
-                    showStickers ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-ink-secondary hover:bg-surface-200 disabled:opacity-30'
-                  }`}
-                >
-                  <Smile className="w-5 h-5" />
-                </button>
+                {/* Sticker toggle — faqat Telegram (Instagram stikerlarni qo'llamaydi) */}
+                {activeConv?.channel === 'telegram' && (
+                  <button
+                    onClick={toggleStickers}
+                    disabled={orgPacks.length === 0}
+                    title={orgPacks.length === 0 ? 'Sozlamalarda sticker pack qo\'shing' : 'Sticker'}
+                    className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-colors ${
+                      showStickers ? 'bg-primary-100 text-primary-600' : 'bg-surface-100 text-ink-secondary hover:bg-surface-200 disabled:opacity-30'
+                    }`}
+                  >
+                    <Smile className="w-5 h-5" />
+                  </button>
+                )}
 
                 {/* Note mode toggle */}
                 <button
