@@ -65,8 +65,8 @@ export default function ReviewLandingPage() {
       <div style={{ width: '100%', maxWidth: 420, background: '#fff', borderRadius: 20, boxShadow: '0 10px 40px rgba(0,0,0,.08)', padding: 28, textAlign: 'center' }}>
         {page.logo
           ? <img src={page.logo} alt="" style={{ width: 72, height: 72, borderRadius: 16, objectFit: 'cover', margin: '0 auto 14px' }} />
-          : <div style={{ width: 72, height: 72, borderRadius: 16, background: color, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, fontWeight: 700, margin: '0 auto 14px' }}>{(page.orgName || page.name || '?')[0]}</div>}
-        <h1 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 4px', color: '#1a1a1a' }}>{page.orgName || page.name}</h1>
+          : <div style={{ width: 72, height: 72, borderRadius: 16, background: color, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, fontWeight: 700, margin: '0 auto 14px' }}>{(page.name || page.orgName || '?')[0]}</div>}
+        <h1 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 4px', color: '#1a1a1a' }}>{page.name || page.orgName}</h1>
 
         {/* RATE */}
         {stage === 'rate' && (
