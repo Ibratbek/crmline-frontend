@@ -173,6 +173,31 @@ function Empty({ onCreate }) {
 }
 
 function QrModal({ page, onClose }) {
+  const [downloading, setDownloading] = useState(false);
+
+  // `download` atributi cross-origin (api.qrserver.com) URL'da ishlamaydi —
+  // rasmni blob qilib olib, keyin saqlaymiz.
+  const downloadQr = async () => {
+    setDownloading(true);
+    try {
+      const res = await fetch(qrSrc(page.slug, 600));
+      if (!res.ok) throw new Error('fetch failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `qr-${page.slug}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error('QR yuklab olishda xato');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -181,10 +206,10 @@ function QrModal({ page, onClose }) {
         <p className="font-semibold text-ink mb-1">{page.name}</p>
         <p className="text-xs text-ink-tertiary mb-4 break-all">{publicUrl(page.slug)}</p>
         <img src={qrSrc(page.slug, 280)} alt="QR" className="w-56 h-56 mx-auto rounded-xl border border-surface-200" />
-        <a href={qrSrc(page.slug, 600)} download={`qr-${page.slug}.png`} target="_blank" rel="noreferrer"
-          className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary-600 text-white text-sm font-semibold">
-          <Download className="w-4 h-4" /> QR yuklab olish
-        </a>
+        <button onClick={downloadQr} disabled={downloading}
+          className="mt-4 inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-primary-600 text-white text-sm font-semibold disabled:opacity-50">
+          {downloading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} QR yuklab olish
+        </button>
         <p className="text-[11px] text-ink-tertiary mt-3">Chop etib stolga qo'ying</p>
       </div>
     </div>
